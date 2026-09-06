@@ -1,9 +1,6 @@
 import {
-	Editor,
 	MarkdownView,
-	MarkdownFileInfo,
 	Modal,
-	Notice,
 	Plugin,
 	FileSystemAdapter,
 } from 'obsidian';
@@ -13,48 +10,57 @@ import {
 	SampleSettingTab,
 } from './settings';
 
+import {PyMathData} from "./types"
 
-import {spawn} from "node:child_process";
+import {ChildProcessWithoutNullStreams, spawn} from "node:child_process";
 import * as path from "node:path";
 
 
 export default class PyMath extends Plugin {
 	settings!: MyPluginSettings;
+	pythonProcess: ChildProcessWithoutNullStreams | null = null;
+	private savedData: PyMathData = {
+		settings: DEFAULT_SETTINGS,
+		blocks: {},
+		variables: {}
+	};
 
 	async onload() {
 		await this.loadSettings();
+		this.savedData = await this.loadData()
 
 		// For now spawn python process onload()
 		const adapter = this.app.vault.adapter;
 		if (!(adapter instanceof FileSystemAdapter)) {
 			throw new Error("PyMath requires desktop Obsidian.");
 		}
-
+		// backend.py needs to be in the plugin directory
 		const backendPath = path.join(
 			adapter.getBasePath(),
-			".obsidian",
+			this.app.vault.configDir,
 			"plugins",
 			this.manifest.id,
 			"backend.py"
 		);
 
-		const python = spawn("python3",[backendPath])
+		this.pythonProcess = spawn("python3",[backendPath]);
+		this.pythonProcess.stdout.setEncoding("utf8");
 
+		this.pythonProcess.stdout.on("data",(data: string) => {
+			const response = JSON.parse(data);
+			console.log("Python returned:", response)
+		});
+
+		this.pythonProcess.stderr.on("data",(data: string) => {
+			console.error("Python error:", data);
+		});
 		
 
 
 		this.registerMarkdownCodeBlockProcessor("pymath", async (source: string, el: HTMLElement) => {
 
-			python.stdout.on("data",(data) => {
-			const response = JSON.parse(data.toString());
-			console.log("Python returned:", response)
-		});
 
-		python.stderr.on("data",(data) => {
-			console.error("Python error:", data.toString());
-		});
-
-		python.stdin.write(
+		this.pythonProcess?.stdin.write(
 			JSON.stringify({
 				x:5
 			}) + "\n"
@@ -93,7 +99,11 @@ export default class PyMath extends Plugin {
 
 	// on unload the plugin must deactivate the running Python process.
 	// Additional details
-	onunload() {}
+	onunload() {
+		this.pythonProcess?.kill();
+		this.pythonProcess = null;
+		this.saveData(this.savedData)
+	}
 
 
 	async loadSettings() {
@@ -104,9 +114,10 @@ export default class PyMath extends Plugin {
 		);
 	}
 
-	async saveSettings() {
-		await this.saveData(this.settings);
+	async saveState() {
+		await this.saveData(this.savedData);
 	}
+
 }
 
 class SampleModal extends Modal {
