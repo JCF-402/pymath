@@ -5,6 +5,7 @@ import {
 	Modal,
 	Notice,
 	Plugin,
+	FileSystemAdapter,
 } from 'obsidian';
 import {
 	DEFAULT_SETTINGS,
@@ -12,43 +13,56 @@ import {
 	SampleSettingTab,
 } from './settings';
 
-// Remember to rename these classes and interfaces!
 
-export default class MyPlugin extends Plugin {
+import {spawn} from "node:child_process";
+import * as path from "node:path";
+
+
+export default class PyMath extends Plugin {
 	settings!: MyPluginSettings;
 
 	async onload() {
 		await this.loadSettings();
 
-		// This creates an icon in the left ribbon.
-		this.addRibbonIcon('dice', 'Sample', (_evt: MouseEvent) => {
-			// Called when the user clicks the icon.
-			new Notice('This is a notice!');
+		// For now spawn python process onload()
+		const adapter = this.app.vault.adapter;
+		if (!(adapter instanceof FileSystemAdapter)) {
+			throw new Error("PyMath requires desktop Obsidian.");
+		}
+
+		const backendPath = path.join(
+			adapter.getBasePath(),
+			".obsidian",
+			"plugins",
+			this.manifest.id,
+			"backend.py"
+		);
+
+		const python = spawn("python3",[backendPath])
+
+		
+
+
+		this.registerMarkdownCodeBlockProcessor("pymath", async (source: string, el: HTMLElement) => {
+
+			python.stdout.on("data",(data) => {
+			const response = JSON.parse(data.toString());
+			console.log("Python returned:", response)
 		});
 
-		// This adds a status bar item to the bottom of the app. Does not work on mobile apps.
-		const statusBarItemEl = this.addStatusBarItem();
-		statusBarItemEl.setText('Status bar text');
+		python.stderr.on("data",(data) => {
+			console.error("Python error:", data.toString());
+		});
 
-		// This adds a simple command that can be triggered anywhere
-		this.addCommand({
-			id: 'open-modal-simple',
-			name: 'Open modal (simple)',
-			callback: () => {
-				new SampleModal(this.app).open();
-			},
-		});
-		// This adds an editor command that can perform some operation on the current editor instance
-		this.addCommand({
-			id: 'replace-selected',
-			name: 'Replace selected content',
-			editorCallback: (
-				editor: Editor,
-				_ctx: MarkdownView | MarkdownFileInfo,
-			) => {
-				editor.replaceSelection('Sample editor command');
-			},
-		});
+		python.stdin.write(
+			JSON.stringify({
+				x:5
+			}) + "\n"
+
+		)
+	})
+
+		// Use this later to / add PyMath block to editor.
 		// This adds a complex command that can check whether the current state of the app allows execution of the command
 		this.addCommand({
 			id: 'open-modal-complex',
@@ -71,22 +85,16 @@ export default class MyPlugin extends Plugin {
 			},
 		});
 
+		// Use this later for PyMath settings
 		// This adds a settings tab so the user can configure various aspects of the plugin
 		this.addSettingTab(new SampleSettingTab(this.app, this));
 
-		// If the plugin hooks up any global DOM events (on parts of the app that doesn't belong to this plugin)
-		// Using this function will automatically remove the event listener when this plugin is disabled.
-		this.registerDomEvent(activeDocument, 'click', (_evt: MouseEvent) => {
-			new Notice('Click');
-		});
-
-		// When registering intervals, this function will automatically clear the interval when the plugin is disabled.
-		this.registerInterval(
-			window.setInterval(() => console.log('setInterval'), 5 * 60 * 1000),
-		);
 	}
 
+	// on unload the plugin must deactivate the running Python process.
+	// Additional details
 	onunload() {}
+
 
 	async loadSettings() {
 		this.settings = Object.assign(
