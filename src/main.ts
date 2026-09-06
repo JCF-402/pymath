@@ -17,17 +17,28 @@ import * as path from "node:path";
 
 
 export default class PyMath extends Plugin {
-	settings!: MyPluginSettings;
 	pythonProcess: ChildProcessWithoutNullStreams | null = null;
-	private savedData: PyMathData = {
+	savedData: PyMathData = {
 		settings: DEFAULT_SETTINGS,
 		blocks: {},
 		variables: {}
 	};
 
 	async onload() {
-		await this.loadSettings();
-		this.savedData = await this.loadData()
+		const data = await this.loadData() as Partial<PyMathData>;
+
+		// savedData keeps track of information in between using Obsidian or turning the plugin on/off
+		// Ideally it is updated everytime that a setting changes or
+		// Everytime that a blocks information is changed. 
+		// It is the source of truth
+		this.savedData = {
+			settings: {
+				...DEFAULT_SETTINGS,
+				...data.settings
+			},
+			blocks: data.blocks ?? {},
+			variables: data.variables ?? {}
+		};
 
 		// For now spawn python process onload()
 		const adapter = this.app.vault.adapter;
@@ -102,16 +113,6 @@ export default class PyMath extends Plugin {
 	onunload() {
 		this.pythonProcess?.kill();
 		this.pythonProcess = null;
-		this.saveData(this.savedData)
-	}
-
-
-	async loadSettings() {
-		this.settings = Object.assign(
-			{},
-			DEFAULT_SETTINGS,
-			(await this.loadData()) as Partial<MyPluginSettings>,
-		);
 	}
 
 	async saveState() {

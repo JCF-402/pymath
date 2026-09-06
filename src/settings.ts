@@ -28,9 +28,9 @@ export class SampleSettingTab extends PluginSettingTab {
 			.addText((text) =>
 				text
 					.setPlaceholder('Enter your secret')
-					.setValue(this.plugin.settings.mySetting)
+					.setValue(this.plugin.savedData.settings.mySetting)
 					.onChange(async (value) => {
-						this.plugin.settings.mySetting = value;
+						this.plugin.savedData.settings.mySetting = value;
 						await this.plugin.saveState();
 					}),
 			);
