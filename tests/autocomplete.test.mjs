@@ -9,7 +9,7 @@ const compiled = await build({
     plugins: [{ name: 'obsidian-stub', setup(builder) {
         builder.onResolve({ filter: /^obsidian$/ }, () => ({ path: 'obsidian', namespace: 'stub' }));
         builder.onLoad({ filter: /.*/, namespace: 'stub' }, () => ({ contents:
-            'export class EditorSuggest { context = null; close() { this.closed = true; } }', loader: 'js' }));
+            'export async function loadMathJax() {} export function renderMath(latex) { return {latex}; } export class EditorSuggest { context = null; close() { this.closed = true; } }', loader: 'js' }));
     } }],
 });
 const { completionQuery, mathSuggestions, PyMathSuggest } =
@@ -134,4 +134,36 @@ test('built-in selection inserts calls but constants remain bare names', () => {
     const rows = [];
     suggest().renderSuggestion(mathSuggestions(note('sq'), 'A.md', 1, 'sq', [])[0], { createDiv: row => rows.push(row) });
     assert.equal(rows[1].text, 'Built-in · Principal square root');
+});
+
+test('equation tags describe local and global suggestions without changing insertion names', () => {
+    const text = note('localSpeed = 2 {Local speed}\nlo');
+    const local = mathSuggestions(text, 'A.md', 2, 'lo', [])[0];
+    assert.equal(local.name, 'localSpeed'); assert.equal(local.tag, 'Local speed');
+    const entry = { ...global('velocity'), tag: 'Fluid velocity' };
+    const item = mathSuggestions(note('vel'), 'A.md', 1, 'vel', [entry])[0];
+    const rows = []; suggest().renderSuggestion(item, { createDiv: row => rows.push(row) });
+    assert.equal(rows[0].text, 'velocity'); assert.equal(rows[1].text, 'Fluid velocity');
+    assert.match(rows[2].text, /Constants.md/);
+});
+
+test('dataset suggestions search by name and insert only the original numeric literal', async () => {
+    const item = { name: 'He_4_2', scope: 'dataset', insertText: '4.002603249700000000001', description: 'Helium-4 · u' };
+    const s = new PyMathSuggest({}, { ready: Promise.resolve(), getDefinitions: () => [] }, { ready: Promise.resolve(), items: [item] });
+    const e = editor(note('He'), 1, 2);
+    s.context = { ...s.onTrigger(e.cursor, e, { path: 'A.md' }), editor: e, file: { path: 'A.md' } };
+    const rows = await s.getSuggestions(s.context);
+    assert.ok(rows.includes(item)); s.selectSuggestion(item);
+    assert.equal(e.getLine(1), item.insertText); assert.equal(e.cursor.ch, item.insertText.length);
+});
+
+test('dataset isotope names render inline LaTeX with mass and atomic numbers', () => {
+    const rows = [];
+    const el = { createDiv(options) {
+        const row = { ...options, appendChild(child) { this.math = child; }, setText(text) { this.text = text; } };
+        rows.push(row); return row;
+    } };
+    suggest().renderSuggestion({ name: 'He_4_2', scope: 'dataset', insertText: '4.0026032497', description: 'Mass in u' }, el);
+    assert.equal(rows[0].math.latex, '{}^{4}_{2}\\mathrm{He}');
+    assert.equal(rows[1].text, 'Mass in u');
 });

@@ -1,5 +1,6 @@
+import type { Dataset } from "./dataset";
 import {
-    EditorSuggest, type App, type Editor, type EditorPosition,
+    EditorSuggest, renderMath, loadMathJax, type App, type Editor, type EditorPosition,
     type EditorSuggestContext, type EditorSuggestTriggerInfo, type TFile,
 } from "obsidian";
 import { completionQuery, mathSuggestions, type MathSuggestion } from "./autocomplete";
@@ -10,7 +11,7 @@ export class PyMathSuggest extends EditorSuggest<MathSuggestion> {
     private cachedText: string | undefined;
     private contentLines = new Set<number>();
 
-    constructor(app: App, private globals: VaultGlobals) {
+    constructor(app: App, private globals: VaultGlobals, private dataset?: Dataset) {
         super(app);
         this.limit = 30;
     }
@@ -30,14 +31,30 @@ export class PyMathSuggest extends EditorSuggest<MathSuggestion> {
 
     async getSuggestions(context: EditorSuggestContext): Promise<MathSuggestion[]> {
         await this.globals.ready;
-        return mathSuggestions(context.editor.getValue(), context.file.path,
+        await this.dataset?.ready;
+        const math = mathSuggestions(context.editor.getValue(), context.file.path,
             context.start.line, context.query, this.globals.getDefinitions());
+        const rows = this.dataset?.items.filter(item => item.name.toLowerCase().startsWith(context.query.toLowerCase())).slice(0, 30) ?? [];
+        if (rows.length) await loadMathJax();
+        return [...math, ...rows].slice(0, 30);
     }
 
     renderSuggestion(item: MathSuggestion, el: HTMLElement): void {
-        el.createDiv({ text: item.parameters ? `${item.name}(${item.parameters.join(", ")})` : item.name });
+        const isotope = item.scope === "dataset" ? /^([A-Za-z]+)_(\d+)_(\d+)$/.exec(item.name) : null;
+        if (isotope) {
+            const title = el.createDiv({ cls: "pymath-dataset-name" });
+            try {
+                title.appendChild(renderMath(`{}^{${isotope[2]}}_{${isotope[3]}}\\mathrm{${isotope[1]}}`, false));
+            } catch {
+                title.setText(item.name);
+            }
+        } else {
+            el.createDiv({ text: item.parameters ? `${item.name}(${item.parameters.join(", ")})` : item.name });
+        }
+        if (item.tag) el.createDiv({ cls: "pymath-suggestion-detail", text: item.tag });
         el.createDiv({ cls: "pymath-suggestion-detail",
-            text: item.scope === "global" ? `Global · ${item.notePath ?? ""}`
+            text: item.scope === "dataset" ? item.description ?? "Dataset"
+                : item.scope === "global" ? `Global · ${item.notePath ?? ""}`
                 : item.scope === "builtin" ? `Built-in · ${item.description ?? ""}`
                 : item.scope === "parameter" ? "Function parameter" : "Local · this note" });
     }
@@ -53,8 +70,9 @@ export class PyMathSuggest extends EditorSuggest<MathSuggestion> {
         const replaceEnd = { line: end.line, ch: end.ch + suffix.length };
         const hasCall = /^\s*\(/.test(editor.getLine(end.line).slice(replaceEnd.ch));
         const addCall = item.parameters !== undefined && !hasCall;
-        editor.replaceRange(item.name + (addCall ? "()" : ""), start, replaceEnd);
-        editor.setCursor({ line: start.line, ch: start.ch + item.name.length +
+        const insertion = item.insertText ?? item.name;
+        editor.replaceRange(insertion + (addCall ? "()" : ""), start, replaceEnd);
+        editor.setCursor({ line: start.line, ch: start.ch + insertion.length +
             (addCall ? (item.parameters!.length ? 1 : 2) : 0) });
         this.close();
     }

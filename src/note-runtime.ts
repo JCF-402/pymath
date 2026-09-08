@@ -1,3 +1,5 @@
+import { parseBlockLines } from "./parser";
+import { isPlotBlock } from "./plot-block";
 import { calculationLines } from "./source-lines";
 import { blockSignature, globalSignature } from "./calculation-signature";
 import {
@@ -117,7 +119,7 @@ export class NoteRuntime {
                 const blocks = { ...this.state.getBlocks() };
                 for (const block of previous.blocks) {
                     const savedBlock = blocks[block.id];
-                    if (savedBlock) blocks[block.id] = { ...savedBlock, source: block.source, order: block.order };
+                    if (savedBlock) blocks[block.id] = { ...savedBlock, source: block.source, order: block.order, lines: parseBlockLines(block.source) };
                 }
                 this.state.setBlocks(blocks);
             }
@@ -220,6 +222,7 @@ export class NoteRuntime {
         this.blockViews.updateNote(notePath, snapshot.blocks, (blockId, el) => {
             const rendered = this.blockOutput.render(
                 el, snapshot.errors[blockId], this.coordinator.results.results.get(blockId),
+                isPlotBlock(snapshot.blocks.find(block => block.id === blockId)?.source ?? ""),
             );
             changed = rendered || changed;
         });

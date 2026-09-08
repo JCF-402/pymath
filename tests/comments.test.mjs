@@ -49,3 +49,14 @@ test('unit labels are stripped after comments and ordinary indexing is preserved
     assert.equal(parseBlock('Symbol("[m]")')[0].expression, 'Symbol("[m]")');
     assert.equal(completionQuery('speed [met', 10), null);
 });
+
+test('tags and units are separate metadata in either order and before comments', () => {
+    for (const suffix of ['[m/s] {Velocity}', '{Velocity} [m/s]']) {
+        assert.deepEqual(parseBlock('v = 20 ' + suffix + ' # label')[0],
+            { type: 'assignment', variable: 'v', expression: '20', unit: 'm/s', tag: 'Velocity' });
+    }
+    assert.equal(parseBlock('x = {1,2}')[0].expression, '{1,2}');
+    assert.equal(parseBlock('Symbol("{name}")')[0].expression, 'Symbol("{name}")');
+    assert.throws(() => parseBlock('x = 2 {}'), /equation tag/);
+    assert.equal(completionQuery('x = 2 {Vel', 10), null);
+});

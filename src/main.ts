@@ -1,3 +1,4 @@
+import { Dataset } from "./dataset";
 import {MarkdownView,Modal,Plugin,FileSystemAdapter,Notice} from 'obsidian';
 import {DEFAULT_SETTINGS,SampleSettingTab,} from './settings';
 
@@ -23,6 +24,7 @@ export default class PyMath extends Plugin {
 		variables: {},
 		functions: {}
 	};
+	dataset: Dataset | null = null;
 	noteRuntime: NoteRuntime | null = null;
 	stateSaver: StateSaver | null = null;
 	private unloading = false;
@@ -57,7 +59,7 @@ export default class PyMath extends Plugin {
 		);
 
 		this.unloading = false;
-		const transport = this.startPython(this.savedData.settings.pythonPath);
+		const transport = await this.startConfiguredPython();
 
 		const globals: VaultGlobals = new VaultGlobals(this.app, () => runtime.refreshGlobals());
 		this.globalIndex = globals;
@@ -73,7 +75,12 @@ export default class PyMath extends Plugin {
 			showSubstitutionSteps: () => this.savedData.settings.showSubstitutionSteps,
 		});
 		this.noteRuntime = runtime;
-		this.registerEditorSuggest(new PyMathSuggest(this.app, globals));
+		this.dataset = new Dataset(this.app, () => this.savedData.settings,
+            message => { new Notice(`PyMath dataset: ${message}`); });
+        this.register(() => this.dataset?.close());
+        void this.dataset.reload();
+        this.addCommand({ id: 'reload-datasets', name: 'Reload datasets', callback: () => { void this.dataset?.reload(); } });
+        this.registerEditorSuggest(new PyMathSuggest(this.app, globals, this.dataset));
 		this.register(() => runtime.close());
 
 		this.registerEvent(
@@ -154,6 +161,39 @@ export default class PyMath extends Plugin {
 
 	}
 
+	private async startConfiguredPython(failOnError = false): Promise<PythonTransport> {
+		const paths = [...new Set([
+			this.savedData.settings.pythonPath,
+			this.savedData.settings.pythonFallbackPath,
+		].filter((value): value is string => typeof value === 'string').map(value => value.trim()).filter(Boolean))];
+		const failures: string[] = [];
+		for (const executable of paths) {
+			if (this.unloading) throw new Error('PyMath is unloading.');
+			try {
+				const transport = this.startPython(executable);
+				// A successful spawn alone does not prove SymPy or the backend loaded.
+				const probe = {
+					type: 'reset-note', requestId: crypto.randomUUID(), notePath: '__pymath_startup__',
+				};
+				const response = await transport.send(probe);
+				if ('error' in response) throw new Error(response.error);
+				if (this.unloading) throw new Error('PyMath is unloading.');
+				return transport;
+			} catch (error) {
+				this.stopPython();
+				if (this.unloading) throw new Error('PyMath is unloading.');
+				failures.push(`${executable}: ${error instanceof Error ? error.message : String(error)}`);
+			}
+		}
+		const error = new Error(`Could not start Python. Check the executable paths and required packages. ${failures.join('; ')}`);
+		if (failOnError) throw error;
+		// Keep settings available even if neither configured executable works.
+		new Notice(error.message);
+		const transport = new PythonTransport((_text, callback) => callback(error));
+		transport.close(error);
+		return transport;
+	}
+
 	private startPython(pythonPath: string): PythonTransport {
 		if (this.unloading) throw new Error('PyMath is unloading.');
 		const adapter = this.app.vault.adapter;
@@ -228,12 +268,13 @@ export default class PyMath extends Plugin {
 
 	private async performRestart(): Promise<void> {
 		this.stopPython();
-		const transport = this.startPython(this.savedData.settings.pythonPath);
+		const transport = await this.startConfiguredPython(true);
 		await this.noteRuntime?.restart(transport);
 	}
 
 	onunload() {
 		this.unloading = true;
+		this.dataset?.close();
 		this.globalIndex?.close();
 		this.globalIndex = null;
 		this.noteRuntime?.close();

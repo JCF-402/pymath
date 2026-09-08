@@ -1,0 +1,36 @@
+import { stripComment } from "./comments";
+import { lineLabels } from "./line-labels";
+import type { BlockLine, PlotLine } from "./types";
+
+export function isPlotBlock(source: string): boolean {
+    return source.split(/\r?\n/).some(line => /^\s*@(plot|range)(?:\s|$)/u.test(stripComment(line)));
+}
+
+export function plotBlockLines(source: string, parse: (source: string) => BlockLine[]): BlockLine[] {
+    const raw = source.split(/\r?\n/);
+    const plots: { text: string; line: number }[] = [], ranges: { text: string; line: number }[] = [];
+    const calculations = raw.map((line, index) => {
+        const text = stripComment(line).trim();
+        if (/^@plot(?:\s|$)/u.test(text)) { plots.push({ text: text.slice(5).trim(), line: index + 1 }); return ""; }
+        if (/^@range(?:\s|$)/u.test(text)) { ranges.push({ text: text.slice(6).trim(), line: index + 1 }); return ""; }
+        return line;
+    });
+    const plot: PlotLine = { type: "plot", expression: "", variable: "x", rangeStart: "", rangeEnd: "", sourceLine: plots[0]?.line ?? ranges[0]?.line ?? 1 };
+    try {
+        if (!plots.length || plots.length > 10) throw new Error("Use between one and ten @plot expressions per block.");
+        if (ranges.length !== 1) throw new Error("Use exactly one @range, such as @range x = -10, 10.");
+        plot.curves = plots.map(item => {
+            const labels = lineLabels(item.text);
+            if (!labels.expression) throw new Error(`Line ${item.line}: Enter an expression after @plot.`);
+            return { ...labels, sourceLine: item.line };
+        });
+        Object.assign(plot, plot.curves[0]);
+        const range = /^([\p{L}_][\p{L}\p{M}\p{N}_]*)\s*=\s*([^,]+),\s*([^,]+)$/u.exec(ranges[0]!.text);
+        if (!range) throw new Error(`Line ${ranges[0]!.line}: Use @range variable = minimum, maximum.`);
+        plot.variable = range[1]!; plot.rangeStart = range[2]!.trim(); plot.rangeEnd = range[3]!.trim();
+    } catch (error) {
+        plot.error = error instanceof Error ? error.message : String(error);
+    }
+    // Preserve blank lines so definition errors retain their original positions.
+    return [...parse(calculations.join("\n")), plot];
+}

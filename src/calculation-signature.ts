@@ -2,7 +2,11 @@ import { parseBlockLines } from "./parser";
 import type { GlobalDefinition } from "./types";
 
 export function blockSignature(source: string): string {
-    try { return JSON.stringify(parseBlockLines(source)); }
+    try { return JSON.stringify(parseBlockLines(source).map(line => {
+        if (line.type !== "plot" || line.error) return line;
+        const { sourceLine: _sourceLine, ...calculation } = line;
+        return { ...calculation, ...(calculation.curves ? { curves: calculation.curves.map(({ sourceLine: _line, ...curve }) => curve) } : {}) };
+    })); }
     catch { return JSON.stringify({ invalid: source }); }
 }
 
@@ -21,6 +25,13 @@ export function globalSignature(sources: string[], globals: GlobalDefinition[], 
         try {
             for (const line of parseBlockLines(source)) {
                 if (line.type === "invalid") continue;
+                if (line.type === "plot") {
+                    for (const curve of line.curves ?? [line]) {
+                        for (const name of names(curve.expression)) if (name !== line.variable) needed.add(name);
+                    }
+                    for (const name of names(line.rangeStart + " " + line.rangeEnd)) needed.add(name);
+                    continue;
+                }
                 const parameters = line.type === "function" ? line.parameters : [];
                 for (const name of names(line.expression)) if (!parameters.includes(name)) needed.add(name);
                 if (line.type !== "expression" && line.scope === "global") {

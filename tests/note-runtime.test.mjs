@@ -21,7 +21,7 @@ export class MarkdownRenderChild {
 }
 export async function loadMathJax() {}
 export async function finishRenderMath() {}
-export function renderMath(source) { return { latex: source }; }
+export function renderMath(source) { if (source.includes("\\tag{")) throw new Error("Tags unsupported in this renderer"); return { latex: source }; }
 `;
 
 const compiled = await build({
@@ -63,6 +63,7 @@ class Element {
         this.textNode = text ? { text } : null;
     }
     empty() { this.setText(''); }
+    createEl(tag, options) { const child = new Element(); child.tagName = tag; child.attributes = options.attr; this.children.push(child); return child; }
     createDiv() { const child = new Element(); this.children.push(child); return child; }
     appendChild(child) { this.children.push(child); }
     output() { return [this.text, ...this.children.map(c => c.latex ?? c.output())].filter(Boolean).join('|'); }
@@ -193,7 +194,7 @@ test('whole note rebuilds include unseen functions and isolate notes; display se
     let data = note(['x = 5\nf(t) = t^2 + x', 'f(3)']);
     h.set('A.md', data);
     const view = h.view('A.md', 'f(3)', data.starts[1]); await view.ready;
-    assert.equal(view.el.output(), '14');
+    assert.equal(view.el.output(), "f{\\left(3 \\right)} = 14");
     const other = note(['x = 100']); h.set('B.md', other);
     await h.runtime.updateNote('B.md', other.text, other.metadata);
     view.unload();
@@ -276,7 +277,7 @@ test('deleting a note clears Python and saved scope without affecting another no
     h.remove('A.md'); await h.runtime.removeNote('A.md');
     assert.ok(Object.values(h.blocks()).every(b => b.notePath === 'B.md'));
     assert.equal((await h.send({requestId:'probe-a',notePath:'A.md',type:'expression',expression:'x'})).result, 'x');
-    assert.equal((await h.send({requestId:'probe-b',notePath:'B.md',type:'expression',expression:'f(2)'})).result, '7');
+    assert.equal((await h.send({requestId:'probe-b',notePath:'B.md',type:'expression',expression:'f(2)'})).result, "f{\\left(2 \\right)} = 7");
 });
 
 test('renaming rebuilds at the new path and clears the old Python scope', async t => {
@@ -400,15 +401,15 @@ test('restart rebuilds notes on a fresh Python process and retains visible views
     const h = await pythonHarness(t);
     const data = note(['x = 5\nf(t) = t + x', 'f(3)']); h.set('A.md', data);
     const view = h.view('A.md', 'f(3)', data.starts[1]); await view.ready;
-    assert.equal(view.el.output(), '8');
+    assert.equal(view.el.output(), "f{\\left(3 \\right)} = 8");
     const fresh = await pythonHarness(t);
     h.transport.close(); h.child.kill();
     await h.runtime.restart(fresh.transport);
-    assert.equal(view.el.output(), '8');
+    assert.equal(view.el.output(), "f{\\left(3 \\right)} = 8");
     assert.deepEqual(fresh.sent.map(r=>r.type), ['reset-note','assignment','function','expression']);
     const edited = note(['x = 10\nf(t) = t + x', 'f(3)']); h.set('A.md', edited);
     await h.runtime.updateNote('A.md', edited.text, edited.metadata);
-    assert.equal(view.el.output(), '13');
+    assert.equal(view.el.output(), "f{\\left(3 \\right)} = 13");
 });
 
 test('restart during initial read initializes the waiting view on the new transport', async () => {
@@ -507,21 +508,21 @@ test('closed notes supply globals before first render; edits refresh consumers w
     const index = await h.indexGlobals(t);
     assert.equal(h.sent.length, 0, 'indexing must not calculate every note');
     const view = h.view('Consumer.md', 'energy(2)', 0); await view.ready;
-    assert.equal(view.el.output(), '18');
+    assert.equal(view.el.output(), "\\operatorname{energy}{\\left(2 \\right)} = 18");
     assert.ok(h.sent.every(request => request.notePath === 'Consumer.md'));
 
     const updated = note(['@global c = 4']); h.set('Constants.md', updated);
     index.update('Constants.md', updated.text);
     // Exercise the debounced automatic callback, without calling refresh ourselves.
-    for (let attempt = 0; attempt < 100 && view.el.output() !== '32'; attempt++) {
+    for (let attempt = 0; attempt < 100 && view.el.output() !== "\\operatorname{energy}{\\left(2 \\right)} = 32"; attempt++) {
         await new Promise(resolve => window.setTimeout(resolve, 10));
     }
-    assert.equal(view.el.output(), '32');
+    assert.equal(view.el.output(), "\\operatorname{energy}{\\left(2 \\right)} = 32");
     assert.ok(!view.el.messages.includes('Calculating…'));
 
     h.remove('Binding.md'); index.removePath('Binding.md');
     await h.runtime.refreshGlobals();
-    assert.notEqual(view.el.output(), '32', 'deleted definitions must not remain callable');
+    assert.notEqual(view.el.output(), "\\operatorname{energy}{\\left(2 \\right)} = 32", 'deleted definitions must not remain callable');
 });
 
 test('global functions resolve forward references, local overrides stay local, and parameters shadow globals', async t => {
@@ -531,7 +532,7 @@ test('global functions resolve forward references, local overrides stay local, a
     await h.indexGlobals(t);
     h.set('Use.md', note(['c = 10\nenergy(2)\nc\nπ_1']));
     const view = h.view('Use.md', 'c = 10\nenergy(2)\nc\nπ_1', 0); await view.ready;
-    assert.equal(view.el.output(), 'c = 10|36|10|7');
+    assert.equal(view.el.output(), "c = 10|\\operatorname{energy}{\\left(2 \\right)} = 36|10|7");
     h.set('Other.md', note(['c']));
     const other = h.view('Other.md', 'c', 0); await other.ready;
     assert.equal(other.el.output(), '3');
@@ -591,7 +592,7 @@ test('closed-note globals with comments evaluate and can be disabled by commenti
     h.set('Use.md', note(['f(2) # evaluate']));
     const index = await h.indexGlobals(t);
     const view = h.view('Use.md', 'f(2) # evaluate', 0); await view.ready;
-    assert.equal(view.el.output(), '10');
+    assert.equal(view.el.output(), "f{\\left(2 \\right)} = 10");
     index.update('Hidden.md', note(['# @global scale = 5\n# @global f(t) = t*scale']).text);
     await h.runtime.refreshGlobals();
     assert.notEqual(view.el.output(), '10');
@@ -634,7 +635,7 @@ test('duplicate and circular globals leave independent math and local overrides 
     assert.match(view.el.output(), /Duplicate global/);
     assert.match(view.el.output(), /Circular global/);
     assert.match(view.el.output(), /clash = 9\|10\|/);
-    assert.match(view.el.output(), /\|3\|8$/);
+    assert.match(view.el.output(), / = 3\|8$/);
     const definition = h.view('B.md', '@global clash = 2', 0); await definition.ready;
     assert.match(definition.el.output(), /Duplicate global/);
 });
@@ -699,7 +700,7 @@ test('invalid function declarations poison the function until a valid redefiniti
     assert.match(view.el.output(), /Line 2:.*unique/);
     assert.match(view.el.output(), /Cannot use 'f'/);
     assert.match(view.el.output(), /\|5\|/);
-    assert.match(view.el.output(), /\|6$/);
+    assert.match(view.el.output(), / = 6$/);
 });
 
 test('valid lines in partially invalid blocks still track global changes and diagnostic line moves', async t => {
@@ -830,5 +831,123 @@ test('global variables and functions accept display labels without making units 
     await h.indexGlobals(t);
     h.set('A.md', note(['travel(2) [m]\nspeed']));
     const view = h.view('A.md', 'travel(2) [m]\nspeed', 0); await view.ready;
-    assert.equal(view.el.output(), '40\\,\\text{m}|20');
+    assert.equal(view.el.output(), "\\operatorname{travel}{\\left(2 \\right)} = 40\\,\\text{m}|20");
+});
+
+test('equation tags render with units and do not alter or propagate through calculations', async t => {
+    const h = await pythonHarness(t);
+    h.set('Globals.md', note(['@global speed = 20 [m/s] {Fluid velocity}']));
+    await h.indexGlobals(t);
+    const source = 'x = speed+2 [m/s] {Outlet velocity}\nx*2';
+    h.set('A.md', note([source])); const view = h.view('A.md', source, 0); await view.ready;
+    assert.equal(view.el.output(), 'x = 22\\,\\text{m/s}|(Outlet velocity)|44');
+    const definition = h.view('Globals.md', '@global speed = 20 [m/s] {Fluid velocity}', 0);
+    await definition.ready; assert.match(definition.el.output(), /\(Fluid velocity\)/);
+});
+
+test('standalone calls retain their written arguments and decorations', async t => {
+    const h = await pythonHarness(t);
+    const source = 'f(x) = x^2\ny = 3\nf(y) [m] {Evaluation}\nf(3)+1';
+    h.set('A.md', note([source])); const view = h.view('A.md', source, 0); await view.ready;
+    assert.match(view.el.output(), /f\{\\left\(y \\right\)\} = 9\\,\\text\{m\}\|\(Evaluation\)\|10$/);
+});
+
+test('automatic notation selects scientific for small and large results even with decimal places', async t => {
+    const h = await pythonHarness(t);
+    h.display({ precision: 12, numberFormat: 'automatic', decimalPlaces: 3 });
+    const source = '0.0000001\n3.016\n1000000\n-0.0000001\n0';
+    h.set('A.md', note([source])); const view = h.view('A.md', source, 0); await view.ready;
+    assert.equal(view.el.output(), '1.000\\times 10^{-7}|3.016|1.000\\times 10^{6}|-1.000\\times 10^{-7}|0.000'.replaceAll('\\times', ' \\times'));
+    h.display({ precision: 12, numberFormat: 'scientific', decimalPlaces: 3 });
+    await h.runtime.refreshGlobals();
+    assert.doesNotMatch(view.el.output(), /10\^\{0\}/);
+    assert.match(view.el.output(), /\|3\.016\|/);
+});
+
+test('plot mode replaces the whole block with a PNG and does not overwrite note variables', async t => {
+    const h = await pythonHarness(t);
+    const source = 'x = 5\nf(x) = sin(x)\n@plot f(x) {Sine curve}\n@range x = -10, 10';
+    h.set('Plot.md', note([source]));
+    const view = h.view('Plot.md', source, 0); await view.ready;
+    assert.equal(view.el.children.length, 1);
+    const chart = view.el.children[0];
+    assert.equal(chart.tagName, 'img');
+    const png = Buffer.from(chart.attributes.src.split(',')[1], 'base64');
+    assert.equal(png.subarray(1, 4).toString(), 'PNG');
+    assert.equal(png.readUInt32BE(16), 1120); assert.equal(png.readUInt32BE(20), 630);
+    const value = await h.send({ type: 'expression', expression: 'x', notePath: 'Plot.md', requestId: crypto.randomUUID() });
+    assert.equal(value.result, '5');
+});
+
+test('global plot dependencies refresh the chart and plot failures replace it with one message', async t => {
+    const h = await pythonHarness(t);
+    h.set('Globals.md', note(['@global scale = 2\n@global f(t) = scale*t']));
+    const index = await h.indexGlobals(t);
+    const source = '@plot f(t)\n@range t = 0, 10'; h.set('Plot.md', note([source]));
+    const view = h.view('Plot.md', source, 0); await view.ready;
+    const image = view.el.children[0].attributes.src;
+    index.update('Globals.md', note(['@global scale = 4\n@global f(t) = scale*t']).text);
+    await h.runtime.refreshGlobals();
+    assert.notEqual(view.el.children[0].attributes.src, image);
+    view.unload();
+    const bad = '@plot sqrt(-1)\n@range t = 0, 10'; const data = note([bad]); h.set('Plot.md', data);
+    await h.runtime.updateNote('Plot.md', data.text, data.metadata);
+    const error = h.view('Plot.md', bad, 0); await error.ready;
+    assert.match(error.el.output(), /No real, finite/); assert.equal(error.el.children.length, 0);
+});
+
+test('plot configuration and failed definitions produce errors without poisoning later calculations', async t => {
+    const h = await pythonHarness(t);
+    for (const [source, expected] of [
+        ['@plot sin(x)', /exactly one @range/],
+        ['@plot x\n@range x = 5, 1', /minimum/],
+        ['f(x) =\n@plot f(x)\n@range x = -1, 1', /Line 1/],
+        ['@plot x+y\n@range x = -1, 1', /Undefined plot/],
+        ['@plot x\n@range x = 0, 1\n@range x = 0, 2', /exactly one @range/],
+    ]) {
+        const data = note([source]); h.set('Plot.md', data);
+        await h.runtime.updateNote('Plot.md', data.text, data.metadata);
+        const view = h.view('Plot.md', source, 0); await view.ready;
+        assert.match(view.el.output(), expected); view.unload();
+    }
+    const response = await h.send({ type: 'expression', expression: '2+3', notePath: 'Plot.md', requestId: crypto.randomUUID() });
+    assert.equal(response.result, '5');
+});
+
+test('plot comments reuse the chart, range edits rebuild it, and constant curves are supported', async t => {
+    const h = await pythonHarness(t);
+    let source = '@plot 2\n@range x = -1, 1'; h.set('Plot.md', note([source]));
+    let view = h.view('Plot.md', source, 0); await view.ready;
+    assert.equal(view.el.children[0].tagName, 'img');
+    const before = h.sent.length;
+    view.unload(); source = '# A constant\n@plot 2 # curve\n@range x = -1, 1';
+    let data = note([source]); h.set('Plot.md', data);
+    await h.runtime.updateNote('Plot.md', data.text, data.metadata);
+    view = h.view('Plot.md', source, 0); await view.ready;
+    assert.equal(h.sent.length, before);
+    view.unload(); source = '@plot 2\n@range x = -10, 10'; data = note([source]); h.set('Plot.md', data);
+    await h.runtime.updateNote('Plot.md', data.text, data.metadata);
+    view = h.view('Plot.md', source, 0); await view.ready;
+    assert.ok(h.sent.length > before); assert.equal(view.el.children[0].tagName, 'img');
+});
+
+test('multiple curves share one image and changes to the second curve dependency refresh it', async t => {
+    const h = await pythonHarness(t);
+    h.set('Globals.md', note(['@global amplitude = 2']));
+    const index = await h.indexGlobals(t);
+    const source = '@plot sin(x) {Sine}\n@plot amplitude*cos(x) {Cosine}\n@range x = -10, 10';
+    h.set('Plot.md', note([source])); const view = h.view('Plot.md', source, 0); await view.ready;
+    assert.equal(view.el.children.length, 1); assert.equal(view.el.children[0].tagName, 'img');
+    const first = view.el.children[0].attributes.src;
+    const request = h.sent.findLast(request => request.type === 'plot');
+    assert.deepEqual(request.curves.map(curve => curve.tag), ['Sine', 'Cosine']);
+    index.update('Globals.md', note(['@global amplitude = 4']).text); await h.runtime.refreshGlobals();
+    assert.notEqual(view.el.children[0].attributes.src, first);
+});
+
+test('a failed later curve reports its own source line rather than silently dropping it', async t => {
+    const h = await pythonHarness(t);
+    const source = '@plot sin(x) {Good}\n# comment\n@plot missing+x {Bad curve}\n@range x = -1, 1';
+    h.set('Plot.md', note([source])); const view = h.view('Plot.md', source, 0); await view.ready;
+    assert.match(view.el.output(), /Bad curve \(line 3\)/); assert.equal(view.el.children.length, 0);
 });

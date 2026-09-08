@@ -101,7 +101,7 @@ export class RebuildResults {
             destination.lineIndex,
             "error" in response
                 ? { error: response.error }
-                : { result: response.result },
+                : { result: response.result, ...(response.image ? { image: response.image } : {}), ...(response.tag ? { tag: response.tag } : {}) },
         );
 
         this.results.set(destination.blockId, blockResults);

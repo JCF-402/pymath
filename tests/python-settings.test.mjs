@@ -16,9 +16,10 @@ export class Plugin {
     addSettingTab(tab) { this.tabs.push(tab); }
 }
 export class FileSystemAdapter { getBasePath() { return '/test-vault'; } }
-export class PluginSettingTab { containerEl = { empty() {} }; }
+export class PluginSettingTab { containerEl = { empty() {}, createDiv(options) { return { options }; } }; }
 export class Setting {
-    constructor() { controls.push(this); }
+    constructor(container) { this.container = container; controls.push(this); }
+    setHeading() { return this; }
     setName(name) { this.name = name; return this; }
     setDesc(description) { this.description = description; return this; }
     addText(callback) {
@@ -53,6 +54,13 @@ export function spawn(executable, args) {
         child.stdin.destroy(); child.stdout.destroy(); child.stderr.destroy();
         setImmediate(() => child.emit('close', 0));
     };
+    child.stdin.on('data', chunk => {
+        if (executable.startsWith('/missing/') || executable.startsWith('/broken/')) return;
+        const request = JSON.parse(chunk.toString());
+        queueMicrotask(() => child.stdout.write(JSON.stringify({requestId: request.requestId, result: ''}) + '\\n'));
+    });
+    if (executable.startsWith('/missing/')) queueMicrotask(() => child.emit('error', new Error('ENOENT')));
+    if (executable.startsWith('/broken/')) queueMicrotask(() => child.emit('close', 1));
     spawns.push({ executable, args, child }); return child;
 }
 `;
@@ -128,6 +136,7 @@ test('unload during restart cannot spawn a subsequent Python process', async t =
     let finish;
     plugin.noteRuntime.restart = () => new Promise(resolve => {finish=resolve;});
     const restarting = plugin.restartPython();
+    await new Promise(resolve => setImmediate(resolve));
     const child = spawns.at(-1).child;
     plugin.onunload(); finish(); await restarting;
     const count = spawns.length;
@@ -167,4 +176,55 @@ test('decimal places accepts zero and blank reset, rejects invalid input and ref
         assert.equal(plugin.writes.at(-1).settings.decimalPlaces, expected);
     }
     assert.equal(refreshes, 3);
+});
+
+test('dataset settings share their own section container', async t => {
+    const plugin = await load(t, { settings: {} }); plugin.tabs[0].display();
+    const path = controls.findLast(item => item.name === 'Dataset CSV path');
+    const unit = controls.findLast(item => item.name === 'Dataset display unit');
+    const precision = controls.findLast(item => item.name === 'Precision');
+    assert.equal(path.container, unit.container);
+    assert.equal(path.container.options.cls, 'pymath-dataset-settings');
+    assert.notEqual(path.container, precision.container);
+});
+
+test('missing primary uses the fallback without rewriting synced paths', async t => {
+    const before = spawns.length;
+    const plugin = await load(t, {settings:{pythonPath:'/missing/python',pythonFallbackPath:'/working/python'}});
+    assert.deepEqual(spawns.slice(before).map(item => item.executable), ['/missing/python', '/working/python']);
+    assert.equal(plugin.pythonProcess, spawns.at(-1).child);
+    assert.equal(plugin.savedData.settings.pythonPath, '/missing/python');
+    assert.equal(plugin.savedData.settings.pythonFallbackPath, '/working/python');
+    const count = spawns.length;
+    await plugin.restartPython();
+    assert.equal(spawns.length, count + 2);
+    assert.equal(plugin.pythonProcess, spawns.at(-1).child);
+});
+
+test('backend failure also falls back, while working primary does not launch fallback', async t => {
+    const broken = await load(t, {settings:{pythonPath:'/broken/python',pythonFallbackPath:'/working/python'}});
+    assert.equal(broken.pythonProcess, spawns.at(-1).child);
+    assert.equal(spawns.at(-1).executable, '/working/python');
+    const before = spawns.length;
+    await load(t, {settings:{pythonPath:'/working/python',pythonFallbackPath:'/unused/python'}});
+    assert.equal(spawns.length, before + 1);
+});
+
+test('identical paths are tried once and total failure leaves settings available', async t => {
+    const before = spawns.length;
+    const plugin = await load(t, {settings:{pythonPath:'/missing/python',pythonFallbackPath:' /missing/python '}});
+    assert.equal(spawns.length, before + 1);
+    assert.equal(plugin.tabs.length, 1);
+    await assert.rejects(plugin.restartPython(), /Could not start Python/);
+});
+
+test('fallback path is optional and its setting saves a trimmed value', async t => {
+    const plugin = await load(t, {settings:{pythonPath:'/working/python'}});
+    assert.equal(plugin.savedData.settings.pythonFallbackPath, '');
+    plugin.tabs[0].display();
+    const control = controls.findLast(item => item.name === 'Fallback Python executable');
+    await control.input.change('  C:\\Python\\python.exe  ');
+    assert.equal(plugin.writes.at(-1).settings.pythonFallbackPath, 'C:\\Python\\python.exe');
+    await control.input.change('  ');
+    assert.equal(plugin.savedData.settings.pythonFallbackPath, '');
 });

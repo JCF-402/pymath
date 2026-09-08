@@ -15,7 +15,17 @@ function isParsedLine(value: unknown): value is BlockLine {
 
     if (value.unit !== undefined && typeof value.unit !== "string") return false;
 
+    if (value.tag !== undefined && typeof value.tag !== "string") return false;
+
     switch (value.type) {
+        case "plot":
+            return (value.curves === undefined || (Array.isArray(value.curves) && value.curves.length > 0 && value.curves.length <= 10 &&
+                value.curves.every(curve => isRecord(curve) && typeof curve.expression === "string" &&
+                    typeof curve.sourceLine === "number" && Number.isInteger(curve.sourceLine) && curve.sourceLine > 0 &&
+                    (curve.tag === undefined || typeof curve.tag === "string") && (curve.unit === undefined || typeof curve.unit === "string")))) &&
+                typeof value.variable === "string" && typeof value.rangeStart === "string" &&
+                typeof value.rangeEnd === "string" && Number.isInteger(value.sourceLine) && typeof value.sourceLine === "number" && value.sourceLine > 0 &&
+                (value.error === undefined || typeof value.error === "string");
         case "invalid":
             return typeof value.error === "string" &&
                 (value.target === undefined || typeof value.target === "string");

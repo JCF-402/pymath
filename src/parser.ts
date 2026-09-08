@@ -1,3 +1,5 @@
+import { isPlotBlock, plotBlockLines } from "./plot-block";
+import { lineLabels } from "./line-labels";
 import { stripComment } from "./comments";
 import type { ParsedLine, BlockLine } from "./types";
 
@@ -15,19 +17,15 @@ import type { ParsedLine, BlockLine } from "./types";
 
 export function parseLine(source: string): ParsedLine {
     const cleaned = stripComment(source).trim();
-    // Require a separating space and a letter-led label to avoid treating
-    // ordinary indexing, such as values[0], as a display unit.
-    const label = /\s+\[([\p{L}°µΩ][^[\]\r\n]*)\]$/u.exec(cleaned);
-    const text = label ? cleaned.slice(0, label.index).trim() : cleaned;
-    const unit = label ? { unit: label[1]!.trim() } : {};
+    const { expression: text, ...labels } = lineLabels(cleaned);
     if (/^@global(?:\s|$)/u.test(text)) {
         const definition = parseLocalLine(text.slice(7));
         if (definition.type === "expression") {
             throw new Error("@global needs a variable or function definition.");
         }
-        return { ...definition, ...unit, scope: "global" };
+        return { ...definition, ...labels, scope: "global" };
     }
-    return { ...parseLocalLine(text), ...unit };
+    return { ...parseLocalLine(text), ...labels };
 }
 
 function parseLocalLine(source: string): ParsedLine {
@@ -121,6 +119,10 @@ export function parseBlock(source: string): ParsedLine[] {
 
 // Preserve every calculation's position even when a neighboring line is incomplete.
 export function parseBlockLines(source: string): BlockLine[] {
+    return isPlotBlock(source) ? plotBlockLines(source, parseCalculationLines) : parseCalculationLines(source);
+}
+
+function parseCalculationLines(source: string): BlockLine[] {
     const results: BlockLine[] = [];
     for (const [index, raw] of source.split(/\r?\n/).entries()) {
         const expression = stripComment(raw).trim();

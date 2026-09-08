@@ -8,9 +8,11 @@ import type { GlobalDefinition } from "./types";
 export interface MathSuggestion {
     name: string;
     parameters?: string[];
-    scope: "local" | "global" | "parameter" | "builtin";
+    scope: "local" | "global" | "parameter" | "builtin" | "dataset";
+    insertText?: string;
     description?: string;
     notePath?: string;
+    tag?: string;
 }
 
 const name = String.raw`[\p{L}_][\p{L}\p{M}\p{N}_]*`;
@@ -21,9 +23,11 @@ export function completionQuery(line: string, ch: number): string | null {
     if (ch > code.length) return null;
     const unitStart = /\s+\[[\p{L}°µΩ][^[\]]*\]?$/u.exec(code);
     if (unitStart && ch > unitStart.index + 1) return null;
+    const tagStart = /\s+\{[^}]*\}?$/u.exec(code.slice(0, ch));
+    if (tagStart) return null;
     const prefix = code.slice(0, ch);
     // Do not offer mathematical names inside strings, comments or directives.
-    if (/[#'"@]/.test(prefix.replace(/^\s*@global\s+/, ""))) return null;
+    if (/[#'"@]/.test(prefix.replace(/^\s*@(global|plot)\s+/, ""))) return null;
     const match = /[\p{L}\p{M}\p{N}_]+$/u.exec(prefix);
     if (!match || !new RegExp(`^${name}$`, "u").test(match[0])) return null;
     const assignment = /^\s*(?:@global\s+)?[^=]+=(?!=)/u.exec(code);
@@ -46,7 +50,7 @@ export function mathSuggestions(
         if ("error" in item) continue;
         const key = item.type === "assignment" ? item.variable : item.name;
         counts.set(key, (counts.get(key) ?? 0) + 1);
-        candidates.set(key, { name: key, scope: "global", notePath: item.notePath,
+        candidates.set(key, { name: key, scope: "global", notePath: item.notePath, tag: item.tag,
             ...(item.type === "function" ? { parameters: item.parameters } : {}) });
     }
     for (const [key, count] of counts) if (count > 1) candidates.delete(key);
@@ -58,7 +62,7 @@ export function mathSuggestions(
                 const parsed = parseLine(line.text);
                 if (parsed.type === "expression" || parsed.scope === "global") continue;
                 const key = parsed.type === "assignment" ? parsed.variable : parsed.name;
-                candidates.set(key, { name: key, scope: "local",
+                candidates.set(key, { name: key, scope: "local", tag: parsed.tag,
                     ...(parsed.type === "function" ? { parameters: parsed.parameters } : {}) });
             } catch { /* Incomplete edits must not disable other suggestions. */ }
         }
@@ -71,7 +75,7 @@ export function mathSuggestions(
             }
         }
     }
-    const priority = { parameter: 0, local: 1, global: 2, builtin: 3 };
+    const priority = { parameter: 0, local: 1, global: 2, builtin: 3, dataset: 4 };
     return [...candidates.values()].filter(item => item.name.startsWith(query))
         .sort((a, b) => priority[a.scope] - priority[b.scope] || a.name.localeCompare(b.name))
         .slice(0, 30);

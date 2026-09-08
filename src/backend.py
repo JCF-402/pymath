@@ -1,6 +1,7 @@
 import sys
 import json
 import io
+import ast
 import tokenize
 from decimal import Decimal
 from sympy import  latex, Symbol, Lambda, Function
@@ -113,28 +114,29 @@ def display_value(value, request):
 def number_latex(value, request):
     mode = request.get("numberFormat", "automatic")
     places = request.get("decimalPlaces")
-    if type(places) is int and 0 <= places <= 20 and value.is_real is True and value.is_finite is True:
-        magnitude = Decimal(str(value.evalf(10))).adjusted() if value != 0 else 0
+    fixed = type(places) is int and 0 <= places <= 20
+    if value.is_real is not True or value.is_finite is not True:
+        displayed, _ = display_value(value, request)
+        return latex(displayed)
+    magnitude = Decimal(str(value.evalf(15))).adjusted() if value != 0 else 0
+    scientific = mode == "scientific" or (mode == "automatic" and value != 0 and (magnitude < -4 or magnitude >= 6))
+    if fixed:
         digits = max(30, places + max(0, magnitude) + 15)
         decimal = Decimal(str(value.evalf(digits)))
-        if mode == "scientific" and decimal:
-            mantissa, exponent = format(decimal, f'.{places}E').split('E')
-            return mantissa + r" \times 10^{" + str(int(exponent)) + "}"
-        text = format(decimal, f'.{places}f')
-        return text[1:] if text.startswith('-') and Decimal(text) == 0 else text
-    value, _ = display_value(value, request)
-    if mode not in ("decimal", "scientific") or value.is_real is not True or value.is_finite is not True:
-        return latex(value)
-    decimal = Decimal(str(value))
-    if mode == "decimal":
-        text = format(decimal, 'f')
-        return text.rstrip('0').rstrip('.') if '.' in text else text
-    if not decimal:
-        return "0"
-    mantissa, exponent = format(decimal, 'E').split('E')
-    if '.' in mantissa:
-        mantissa = mantissa.rstrip('0').rstrip('.')
-    return mantissa + r" \times 10^{" + str(int(exponent)) + "}"
+    else:
+        displayed, _ = display_value(value, request)
+        decimal = Decimal(str(displayed))
+    if scientific and decimal:
+        text = format(decimal, f'.{places}E' if fixed else 'E')
+        mantissa, exponent = text.split('E')
+        if not fixed and '.' in mantissa:
+            mantissa = mantissa.rstrip('0').rstrip('.')
+        # Multiplying by 10^0 adds no information, even in scientific mode.
+        return mantissa if int(exponent) == 0 else mantissa + r" \times 10^{" + str(int(exponent)) + "}"
+    text = format(decimal, f'.{places}f' if fixed else 'f')
+    if not fixed and '.' in text:
+        text = text.rstrip('0').rstrip('.')
+    return text[1:] if text.startswith('-') and Decimal(text) == 0 else text
 
 
 def explain_error(error, source):
@@ -161,6 +163,110 @@ def explain_error(error, source):
     if isinstance(error, TypeError) and ('arguments' in detail or 'argument' in detail):
         return f"Check the function's arguments. Details: {detail}"
     return detail
+
+
+def render_plot(request, variables, failures):
+    if request.get("error"):
+        raise ValueError(request["error"])
+    independent = request.get("variable")
+    if not isinstance(independent, str) or not independent.isidentifier():
+        raise ValueError("The plot range needs a valid variable name.")
+    symbol = Symbol(independent)
+    curves = request.get("curves") or [request]
+    if not isinstance(curves, list) or not 1 <= len(curves) <= 10:
+        raise ValueError("Use between one and ten plot expressions.")
+    context = {**variables, independent: symbol}
+    def curve_expression(curve):
+        source = curve.get("expression", "")
+        referenced = {token.string for token in tokenize.generate_tokens(io.StringIO(source).readline) if token.type == tokenize.NAME}
+        for name in sorted((referenced - {independent}) & failures.keys()):
+            raise ValueError(f"Cannot use '{name}': {failures[name]}")
+        expression = parse_expr(source, local_dict=context.copy(), transformations=transformations)
+        if not hasattr(expression, "free_symbols"):
+            raise ValueError("Plot one scalar expression per curve.")
+        unknown = expression.free_symbols - {symbol}
+        if unknown:
+            raise ValueError("Undefined plot values: " + ", ".join(sorted(str(item) for item in unknown)))
+        return expression
+    for key in ("rangeStart", "rangeEnd"):
+        referenced = {token.string for token in tokenize.generate_tokens(io.StringIO(request.get(key, "")).readline) if token.type == tokenize.NAME}
+        for name in sorted(referenced & failures.keys()):
+            raise ValueError(f"Cannot use '{name}': {failures[name]}")
+    bounds = []
+    for key in ("rangeStart", "rangeEnd"):
+        value = parse_expr(request.get(key, ""), local_dict=variables.copy(), transformations=transformations)
+        if value.is_real is not True or value.is_finite is not True or value.free_symbols:
+            raise ValueError("Plot bounds must be finite real numbers.")
+        bounds.append(float(value))
+    import math
+    if not all(math.isfinite(value) for value in bounds) or bounds[0] >= bounds[1]:
+        raise ValueError("The plot minimum must be less than the maximum; both must be finite.")
+    try:
+        import os
+        # Keep Matplotlib's font cache with the plugin, not in a user directory.
+        os.environ.setdefault("MPLCONFIGDIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), ".matplotlib-cache"))
+        import numpy as np
+        from matplotlib.figure import Figure
+        from matplotlib.backends.backend_agg import FigureCanvasAgg
+        from sympy import lambdify
+    except ImportError as error:
+        raise ValueError("Plotting requires Matplotlib. Install matplotlib in the Python executable selected in PyMath settings.") from error
+    xs = np.linspace(bounds[0], bounds[1], 801)
+    if not np.all(np.isfinite(xs)):
+        raise ValueError("The plot range is too large to sample.")
+    def sample(curve):
+        try:
+            expression = curve_expression(curve)
+            with np.errstate(all="ignore"):
+                raw = np.asarray(lambdify(symbol, expression, modules="numpy")(xs), dtype=complex)
+            ys = np.broadcast_to(raw, xs.shape).real.copy()
+            invalid = ~np.isfinite(raw) | (np.abs(raw.imag) > 1e-12)
+            ys[np.broadcast_to(invalid, xs.shape)] = np.nan
+        except Exception as error:
+            raise ValueError("Could not sample this expression as a real-valued curve: " + str(error)) from error
+        if np.count_nonzero(np.isfinite(ys)) < 2:
+            raise ValueError("No real, finite curve values in this range.")
+        # Avoid joining common poles such as 1/x across opposite infinities.
+        differences = np.abs(np.diff(ys))
+        finite = differences[np.isfinite(differences)]
+        if finite.size:
+            threshold = max(float(np.median(finite)) * 100, float(np.percentile(finite, 90)) * 10, 1e-12)
+            ys[1:][differences > threshold] = np.nan
+        return ys
+    sampled = []
+    for curve in curves:
+        try:
+            sampled.append(sample(curve))
+        except Exception as error:
+            raise ValueError(f"Curve {curve.get('tag') or curve.get('expression')} (line {curve.get('sourceLine', '?')}): {error}") from error
+    figure = Figure(figsize=(8, 4.5), dpi=140, layout="constrained")
+    canvas = FigureCanvasAgg(figure)
+    try:
+        axes = figure.add_subplot(111)
+        colors = ["#738fe6", "#e69851", "#53b59d", "#d775a2", "#ad8bd4", "#c3b24f", "#65afce", "#c97463", "#8aa866", "#a0a0a0"]
+        for index, (curve, ys) in enumerate(zip(curves, sampled)):
+            axes.plot(xs, ys, color=colors[index], linewidth=2, label=curve.get("tag") or curve["expression"])
+        if len(curves) > 1:
+            legend = axes.legend(framealpha=0, labelcolor="#999999")
+            for text in legend.get_texts():
+                text.set_parse_math(False)
+        axes.set_xlim(*bounds)
+        axes.set_xlabel(independent, color="#999999")
+        axes.set_ylabel((curves[0].get("unit") if all(curve.get("unit") == curves[0].get("unit") for curve in curves) else None) or "value", color="#999999", parse_math=False)
+        if len(curves) == 1 and request.get("tag"):
+            axes.set_title(request["tag"], color="#999999", parse_math=False)
+        axes.tick_params(colors="#999999")
+        for spine in axes.spines.values():
+            spine.set_color("#888888")
+        axes.grid(True, alpha=0.25)
+        figure.patch.set_alpha(0)
+        axes.patch.set_alpha(0)
+        buffer = io.BytesIO()
+        canvas.print_png(buffer)
+        import base64
+        return base64.b64encode(buffer.getvalue()).decode("ascii")
+    finally:
+        figure.clear()
 
 
 note_variable = {}
@@ -224,6 +330,13 @@ for line in sys.stdin:
             if target is not None and not isinstance(target, str):
                 target = None
             raise ValueError(request.get("error", "Invalid calculation."))
+
+        if line_type == "plot":
+            source = request.get("expression", "")
+            failures = {**{key: value for key, value in global_errors.items() if key not in note_values}, **local_errors}
+            png = render_plot(request, variables, failures)
+            print(json.dumps({"requestId": request_id, "result": "", "image": png}), flush=True)
+            continue
 
         if line_type not in ("expression","assignment","function"):
             raise ValueError("Unsupported line type.")
@@ -347,19 +460,33 @@ for line in sys.stdin:
                 # Format using the previous values before storing the new one.
                 if not is_global:
                     note_values[variable] = expression
-            else: 
+            else:
                 result_latex = number_latex(expression, request)
+                # Display a standalone user-defined call without evaluating
+                # away its name or substituting its written arguments.
+                try:
+                    call = ast.parse(source.replace('^', '**'), mode='eval').body
+                except SyntaxError:
+                    call = None
+                if isinstance(call, ast.Call) and isinstance(call.func, ast.Name) and isinstance(variables.get(call.func.id), Lambda):
+                    symbolic = {key: Function(key) if isinstance(value, Lambda) else Symbol(key)
+                                for key, value in variables.items()}
+                    written = parse_expr(source, local_dict=symbolic, transformations=transformations, evaluate=False)
+                    result_latex = latex(written) + " = " + result_latex
             
+        escapes = {"\\": r"\textbackslash{}", "{": r"\{", "}": r"\}",
+                   "$": r"\$", "&": r"\&", "%": r"\%", "#": r"\#",
+                   "_": r"\_", "^": r"\textasciicircum{}", "~": r"\textasciitilde{}"}
         unit = request.get("unit")
         if isinstance(unit, str) and unit:
-            escapes = {"\\": r"\textbackslash{}", "{": r"\{", "}": r"\}",
-                       "$": r"\$", "&": r"\&", "%": r"\%", "#": r"\#",
-                       "_": r"\_", "^": r"\textasciicircum{}", "~": r"\textasciitilde{}"}
             result_latex += r"\,\text{" + "".join(escapes.get(char, char) for char in unit) + "}"
+        tag = request.get("tag")
+
         if target and not is_global:
             local_errors.pop(target, None)
         response = {
             "result": result_latex,
+            **({"tag": tag} if isinstance(tag, str) and tag else {}),
             "requestId": request_id
             }
         

@@ -77,3 +77,57 @@ In PyMath settings, **Precision** accepts 2–30 significant digits. **Number fo
 ## Unit labels
 
 Append a label separated by a space, such as `speed = distance/time [m/s]`. Labels appear in upright text after the final result and can precede a trailing comment. They also work on expressions and global/function definitions. These are literal display labels: units are not calculated, converted, or inherited by later expressions. Labels begin with a letter or a unit symbol such as `°`; ordinary indexing such as `values[0]` is preserved.
+
+## Equation tags
+
+Append `{Outlet velocity}` to an equation, for example `v = 20 [m/s] {Outlet velocity}`. Tags render as right-aligned parenthesized labels beside the equation and appear in autocomplete descriptions for local/global variables and functions. Unit and tag suffixes may appear in either order before a trailing comment. Tags are literal text, not executable LaTeX or alternative variable names; use the original variable/function name in calculations.
+
+## CSV dataset autocomplete
+
+One vault CSV can supply numeric autocomplete entries. Configure **Dataset CSV path**, **Dataset name template**, **Dataset value column**, **Dataset description template**, and **Dataset display unit**, then run **PyMath: Reload datasets**. The configured dataset also loads at startup; editing a CSV does not change previously inserted numbers or automatically reload the file.
+
+Defaults match `N,Z,A,El,mass_u` headers: name `{El}_{A}_{Z}`, value column `mass_u`, description `{El}-{A}, Z={Z}, N={N}`, and display unit `u`. Type `He` in a PyMath block to see matching rows. Selecting a row inserts only its numeric text, retaining the digits from the CSV. Labels and units are shown in the suggestion, not inserted into the equation.
+
+Copy `examples/isotopes-sample.csv` into your vault, for example as `Data/isotopes.csv`, to try it. These three example rows were transcribed from the supplied image and are test data, not a verified reference dataset.
+
+CSV supports comma delimiters, quoted fields, escaped quotes, CRLF and UTF-8 BOM. Headers must be unique; values must be decimal/scientific numeric literals. A malformed dataset shows a notice and supplies no suggestions. Files are limited to 5 MB. This version supports one dataset; JSON and multiple datasets are not yet implemented.
+
+Automatic number format uses scientific notation for nonzero magnitudes below `0.0001` or at least `1,000,000`, including when decimal places are set. Other values use decimal notation. Scientific output omits a redundant `× 10^0` factor.
+
+Long equations scroll horizontally within their result rather than widening the note. Tags wrap and move below their equation when the result is 480 px wide or narrower. Short equations remain centered. This layout uses the result container's width, so it responds to split panes independently of the overall window size.
+
+## Matplotlib plots
+
+A block containing `@plot` renders as one responsive chart in place of all equation output:
+
+````markdown
+```pymath
+f(x) = sin(x)
+@plot f(x) {Sine curve}
+@range x = -10, 10
+```
+````
+
+You can also plot an existing local or global function, or a direct expression such as `@plot x^2`. Use one to ten `@plot` lines and exactly one `@range variable = minimum, maximum` per block. Bounds may reference defined values (for example `-pi, pi`); both must be finite real values with minimum below maximum. For one curve, a trailing tag becomes the chart title. For multiple curves, tags become legend labels (or the expression is used if untagged), with distinct colors. A unit becomes the vertical-axis label when all curves share it; otherwise the axis reads “value”.
+
+Definitions in the block are evaluated in their usual order before the plot is generated. The plot's independent variable shadows a note variable of the same name without changing its stored value. Function/global/range changes refresh the chart, while comment-only edits reuse it. If any calculation in the plot block fails, the block displays an error instead of a chart.
+
+Matplotlib must be installed in the selected Python environment (`python -m pip install matplotlib`, using that environment's executable). Ordinary calculations do not import or require it. Plots use the noninteractive Agg renderer and return an in-memory PNG; no separate plot window or image file is created. Matplotlib's font cache is kept in `.matplotlib-cache` beside `backend.py` unless `MPLCONFIGDIR` is configured.
+
+Plots support up to ten real-valued curves, 801 samples per curve, and a static image. Complex/nonfinite samples are omitted; a jump heuristic breaks common discontinuities but does not guarantee detection of every pole or feature. Interactive zoom, configurable sampling, and export commands are not implemented yet. Deploy updated `main.js`, `backend.py`, and `styles.css` together.
+
+For a comparison plot:
+
+````markdown
+```pymath
+@plot sin(x) {Sine}
+@plot cos(x) {Cosine}
+@range x = -10, 10
+```
+````
+
+## Python paths across devices
+
+**Python executable** is the primary path or command. **Fallback Python executable** is an optional second path, useful when these settings sync between devices. On load and on **Restart Python**, PyMath tries the primary and waits for a backend response; if startup fails, it stops that process and tries the fallback. Identical paths are tried only once. The selected path is not written back over the synced settings. If both fail, settings remain accessible so the paths can be corrected.
+
+Both fields accept an executable path or command, not shell arguments. A working primary is always preferred. This startup check verifies the SymPy backend; Matplotlib is still loaded only when plotting, so install it in the environment used for plots. Run **Restart Python** after changing either path.

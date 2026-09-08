@@ -11,3 +11,54 @@ If your plugin does not need CSS, delete this file.
     color: var(--text-muted);
     font-size: var(--font-ui-smaller);
 }
+
+.pymath-dataset-settings {
+    border: 1px solid var(--background-modifier-border);
+    border-radius: var(--radius-m);
+    padding: 0 var(--size-4-4);
+    margin-bottom: var(--size-4-6);
+    background: var(--background-secondary);
+}
+
+.pymath-dataset-name {
+    padding-block: var(--size-2-2);
+}
+
+.pymath-result {
+    min-width: 0;
+    max-width: 100%;
+    container-type: inline-size;
+    overflow-wrap: anywhere;
+}
+.pymath-tagged-equation {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) fit-content(35%);
+    align-items: center;
+    gap: 1em;
+}
+.pymath-equation-body {
+    min-width: 0;
+    max-width: 100%;
+    overflow-x: auto;
+    padding-block: 0.25em;
+}
+/* Center short formulas, but start overflowing formulas at their left edge
+   so the beginning remains reachable when horizontally scrolling. */
+.pymath-equation-body > mjx-container[display="true"] {
+    display: block;
+    width: max-content;
+    min-width: 100%;
+    margin: 0.5em 0;
+}
+.pymath-equation-tag {
+    min-width: 0;
+    text-align: right;
+    overflow-wrap: anywhere;
+    max-width: 16em;
+}
+@container (max-width: 480px) {
+    .pymath-tagged-equation { grid-template-columns: minmax(0, 1fr); gap: 0.25em; }
+    .pymath-equation-tag { justify-self: end; max-width: 100%; }
+}
+
+.pymath-plot { display: block; width: 100%; max-width: 100%; height: auto; }

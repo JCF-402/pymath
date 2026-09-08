@@ -27,6 +27,10 @@ export function createPythonResponseReceiver(onResponse: (response: PythonRespon
 				if ('result' in value && typeof value.result === "string" && typeof requestId === "string"){
 					response = {
 						result: value.result,
+                        ...("image" in value && typeof value.image === "string" &&
+                            value.image.startsWith("iVBORw0KGgo") && /^[A-Za-z0-9+/=]+$/.test(value.image)
+                            ? { image: value.image } : {}),
+                        ...("tag" in value && typeof value.tag === "string" ? { tag: value.tag } : {}),
 						requestId
 					}
 				}

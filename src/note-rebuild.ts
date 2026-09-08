@@ -40,7 +40,7 @@ export function createNoteRebuild(
         .sort((a, b) => a.order - b.order);
 
     for (const block of noteBlocks) {
-        const sourceLines = calculationLines(block.source);
+        const sourceLines = calculationLines(block.source).filter(line => !/^\s*@(plot|range)(?:\s|$)/u.test(block.source.split(/\r?\n/)[line - 1]!));
         for (const [lineIndex, parsed] of block.lines.entries()) {
             requests.push({
                 ...parsed,
@@ -49,7 +49,7 @@ export function createNoteRebuild(
                 notePath,
                 blockId: block.id,
                 lineIndex,
-                sourceLine: sourceLines[lineIndex] ?? lineIndex + 1,
+                sourceLine: parsed.type === "plot" ? parsed.sourceLine : sourceLines[lineIndex] ?? lineIndex + 1,
                 showSubstitutionSteps,
             });
         }

@@ -1,22 +1,27 @@
+import { datasetDefaults, type DatasetSettings } from "./dataset";
+import { datasetSettings } from "./dataset-settings";
 import { App, PluginSettingTab, Setting } from 'obsidian';
 import MyPlugin from './main';
 
-export interface MyPluginSettings {
+export interface MyPluginSettings extends DatasetSettings {
 	decimalPlaces: number | null;
 	precision: number;
 	numberFormat: "automatic" | "decimal" | "scientific";
 	mySetting: string;
 	showSubstitutionSteps: boolean;
 	pythonPath: string;
+	pythonFallbackPath: string;
 }
 
 export const DEFAULT_SETTINGS: MyPluginSettings = {
+	...datasetDefaults,
 	decimalPlaces: null,
 	precision: 12,
 	numberFormat: 'automatic',
 	mySetting: 'default',
 	showSubstitutionSteps: false,
 	pythonPath: 'python3',
+	pythonFallbackPath: '',
 };
 
 export class SampleSettingTab extends PluginSettingTab {
@@ -31,6 +36,7 @@ export class SampleSettingTab extends PluginSettingTab {
 		const { containerEl } = this;
 
 		containerEl.empty();
+		datasetSettings(containerEl, this.plugin);
 
 		new Setting(containerEl)
 			.setName('Python executable')
@@ -45,6 +51,15 @@ export class SampleSettingTab extends PluginSettingTab {
 						await this.plugin.saveState();
 					}),
 			);
+
+		new Setting(containerEl)
+			.setName('Fallback Python executable')
+			.setDesc('Optional second path or command for another environment or device. Tried if the primary cannot start the backend. Run Restart Python after changing it.')
+			.addText(text => text.setValue(this.plugin.savedData.settings.pythonFallbackPath)
+				.onChange(async value => {
+					this.plugin.savedData.settings.pythonFallbackPath = value.trim();
+					await this.plugin.saveState();
+				}));
 
 		new Setting(containerEl)
 			.setName('Show substitution steps')

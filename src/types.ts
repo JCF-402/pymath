@@ -2,13 +2,15 @@
 import { MyPluginSettings } from "./settings";
 
 export type LineResult =
-    | { result: string }
+    | { result: string; tag?: string; image?: string }
     | { error: string };
 
 // Matches the JSON currently printed by backend.py.
 export type PythonResponse  = 
 | {
-    result: string; 
+    result: string;
+    tag?: string;
+    image?: string;
     requestId: string}
 | {
     error: string, 
@@ -38,6 +40,7 @@ export type ParsedLine =
     | {
         type: "assignment";
         unit?: string;
+        tag?: string;
         scope?: "global";
         variable: string;
         expression: string;
@@ -45,11 +48,13 @@ export type ParsedLine =
     | {
         type: "expression";
         unit?: string;
+        tag?: string;
         expression: string;
     }
     | {
         type: "function";
         unit?: string;
+        tag?: string;
         scope?: "global";
         name: string;
         parameters: string[];
@@ -68,7 +73,20 @@ export type GlobalDefinition = {
     line: number;
 } & (Exclude<ParsedLine, { type: "expression" }> | { error: string; name?: string });
 
-export type BlockLine = ParsedLine | {
+export interface PlotLine {
+    curves?: { expression: string; tag?: string; unit?: string; sourceLine: number }[];
+    type: "plot";
+    expression: string;
+    variable: string;
+    rangeStart: string;
+    rangeEnd: string;
+    sourceLine: number;
+    tag?: string;
+    unit?: string;
+    error?: string;
+}
+
+export type BlockLine = ParsedLine | PlotLine | {
     type: "invalid";
     expression: string;
     error: string;
