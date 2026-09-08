@@ -1,4 +1,5 @@
-import type { Blocks, ParsedLine, GlobalDefinition } from "./types";
+import { calculationLines } from "./source-lines";
+import type { Blocks, BlockLine, GlobalDefinition } from "./types";
 
 type ResetRequest = {
     type: "reset-note";
@@ -7,11 +8,12 @@ type ResetRequest = {
     notePath: string;
 };
 
-type EvaluationRequest = ParsedLine & {
+type EvaluationRequest = BlockLine & {
     requestId: string;
     notePath: string;
     blockId: string;
     lineIndex: number;
+    sourceLine: number;
     showSubstitutionSteps: boolean;
 };
 
@@ -37,6 +39,7 @@ export function createNoteRebuild(
         .sort((a, b) => a.order - b.order);
 
     for (const block of noteBlocks) {
+        const sourceLines = calculationLines(block.source);
         for (const [lineIndex, parsed] of block.lines.entries()) {
             requests.push({
                 ...parsed,
@@ -44,6 +47,7 @@ export function createNoteRebuild(
                 notePath,
                 blockId: block.id,
                 lineIndex,
+                sourceLine: sourceLines[lineIndex] ?? lineIndex + 1,
                 showSubstitutionSteps,
             });
         }

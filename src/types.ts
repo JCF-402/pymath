@@ -24,7 +24,7 @@ export type Blocks = {
     notePath: string;
     source: string;
     order: number;
-    lines: ParsedLine[],
+    lines: BlockLine[],
 
 }
 export type Variables = {
@@ -63,4 +63,12 @@ export interface PyMathData {
 export type GlobalDefinition = {
     notePath: string;
     line: number;
-} & (Exclude<ParsedLine, { type: "expression" }> | { error: string });
+} & (Exclude<ParsedLine, { type: "expression" }> | { error: string; name?: string });
+
+export type BlockLine = ParsedLine | {
+    type: "invalid";
+    expression: string;
+    error: string;
+    target?: string;
+    scope?: "global";
+};

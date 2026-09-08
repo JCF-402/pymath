@@ -1,3 +1,5 @@
+import { calculationLines } from "./source-lines";
+import { blockSignature, globalSignature } from "./calculation-signature";
 import {
     TFile, loadMathJax, finishRenderMath,
     type App, type CachedMetadata, type MarkdownPostProcessorContext,
@@ -87,18 +89,35 @@ export class NoteRuntime {
         const previous = this.notes.get(notePath);
         const showSteps = this.state.showSubstitutionSteps();
         const scanned = scanPyMathBlocks(text, cache);
+        const globals = this.state.getGlobals?.();
+        const sources = scanned.map(block => block.source);
+        const locations = previous?.status !== "ready" || previous.blocks.some(block =>
+            [...(this.coordinator.results.results.get(block.id)?.values() ?? [])].some(result => "error" in result));
+        const globalsUnchanged = previous !== undefined && (previous.globals === globals ||
+            globalSignature(sources, previous.globals ?? [], locations) === globalSignature(sources, globals ?? [], locations));
         const calculationsUnchanged = previous !== undefined &&
             previous.showSubstitutionSteps === showSteps &&
-            previous.globals === this.state.getGlobals?.() &&
+            globalsUnchanged &&
             previous.blocks.length === scanned.length &&
-            previous.blocks.every((block, index) => block.source === scanned[index]?.source);
+            previous.blocks.every((block, index) => blockSignature(block.source) === blockSignature(scanned[index]!.source) &&
+                (!locations || JSON.stringify(calculationLines(block.source)) === JSON.stringify(calculationLines(scanned[index]!.source))));
         if (calculationsUnchanged) {
             // Prose edits can move blocks without changing their calculations.
+            const sourceChanged = previous.blocks.some((block, index) => block.source !== scanned[index]!.source);
+            previous.globals = globals;
             previous.text = text;
             previous.metadata = cache;
             previous.blocks = scanned.map((block, index) => ({
                 ...block, id: previous.blocks[index]!.id,
             }));
+            if (sourceChanged) {
+                const blocks = { ...this.state.getBlocks() };
+                for (const block of previous.blocks) {
+                    const savedBlock = blocks[block.id];
+                    if (savedBlock) blocks[block.id] = { ...savedBlock, source: block.source, order: block.order };
+                }
+                this.state.setBlocks(blocks);
+            }
             return (previous.work ?? Promise.resolve()).then(() => this.refreshNoteViews(notePath));
         }
 

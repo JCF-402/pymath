@@ -1,4 +1,4 @@
-import type { Blocks, ParsedLine } from "./types";
+import type { Blocks, BlockLine } from "./types";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === "object" &&
@@ -6,7 +6,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
         !Array.isArray(value);
 }
 
-function isParsedLine(value: unknown): value is ParsedLine {
+function isParsedLine(value: unknown): value is BlockLine {
     if (!isRecord(value) || typeof value.expression !== "string") {
         return false;
     }
@@ -14,6 +14,10 @@ function isParsedLine(value: unknown): value is ParsedLine {
     if (value.scope !== undefined && value.scope !== "global") return false;
 
     switch (value.type) {
+        case "invalid":
+            return typeof value.error === "string" &&
+                (value.target === undefined || typeof value.target === "string");
+
         case "expression":
             return value.scope === undefined;
 

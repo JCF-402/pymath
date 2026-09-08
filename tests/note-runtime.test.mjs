@@ -212,7 +212,7 @@ test('invalid definitions discard old state, and a fully empty note still resets
     const invalid = h.view('A.md', 'x =', 0), result = h.view('A.md', 'x + 2', data.starts[1]);
     await Promise.all([work, invalid.ready, result.ready]);
     assert.match(invalid.el.output(), /Line 1/);
-    assert.equal(result.el.output(), 'x + 2');
+    assert.match(result.el.output(), /Cannot use 'x': Line 1/);
     await h.runtime.updateNote('A.md', '', {});
     assert.equal(Object.keys(h.blocks()).length, 0);
     assert.equal(h.sent.at(-1).type, 'reset-note');
@@ -565,4 +565,186 @@ test('Python restart restores indexed globals without reading or opening their d
     await h.runtime.restart(fresh.transport);
     assert.equal(view.el.output(), '25'); assert.equal(h.reads(), reads);
     assert.deepEqual(fresh.sent.map(r => r.type), ['reset-note', 'expression']);
+});
+
+test('commented calculations render only math; commenting out definitions clears their previous values', async t => {
+    const h = await pythonHarness(t);
+    const source = '# Values\nx = 5 # starting value\nf(t) = t*x # multiply\nf(2) # answer';
+    h.set('Comments.md', note([source]));
+    const view = h.view('Comments.md', source, 0); await view.ready;
+    assert.match(view.el.output(), /10$/); assert.doesNotMatch(view.el.output(), /Values|starting|answer|#/);
+    view.unload();
+    const changed = '# x = 5\n# f(t) = t*x';
+    const data = note([changed]); h.set('Comments.md', data);
+    await h.runtime.updateNote('Comments.md', data.text, data.metadata);
+    const empty = h.view('Comments.md', changed, 0); await empty.ready;
+    assert.equal(empty.el.output(), '');
+    const response = await h.send({ type: 'expression', expression: 'x', notePath: 'Comments.md', requestId: crypto.randomUUID() });
+    assert.equal(response.result, 'x');
+});
+
+test('closed-note globals with comments evaluate and can be disabled by commenting them out', async t => {
+    const h = await pythonHarness(t);
+    h.set('Hidden.md', note(['# constants\n@global scale = 5 # factor\n@global f(t) = t*scale # multiply']));
+    h.set('Use.md', note(['f(2) # evaluate']));
+    const index = await h.indexGlobals(t);
+    const view = h.view('Use.md', 'f(2) # evaluate', 0); await view.ready;
+    assert.equal(view.el.output(), '10');
+    index.update('Hidden.md', note(['# @global scale = 5\n# @global f(t) = t*scale']).text);
+    await h.runtime.refreshGlobals();
+    assert.notEqual(view.el.output(), '10');
+});
+
+test('global failures stay on dependent lines, propagate through local assignments and recover', async t => {
+    const h = await pythonHarness(t);
+    h.set('Globals.md', note(['@global broken = missing\n@global dependent(t) = t*broken\n@global good = 7']));
+    const source = 'good+1\nx = dependent(2)\nx+1\n3+4';
+    h.set('Use.md', note([source]));
+    const index = await h.indexGlobals(t);
+    const view = h.view('Use.md', source, 0); await view.ready;
+    assert.match(view.el.output(), /^8\|PyMath:/);
+    assert.match(view.el.output(), /Globals.md:2/);
+    assert.match(view.el.output(), /Cannot use 'x'/);
+    assert.match(view.el.output(), /\|7$/);
+    index.update('Globals.md', note(['@global broken = 5\n@global dependent(t) = t*broken\n@global good = 7']).text);
+    await h.runtime.refreshGlobals();
+    assert.equal(view.el.output(), '8|x = 10|11|7');
+});
+
+test('malformed global definitions poison their names without stopping unrelated notes', async t => {
+    const h = await pythonHarness(t);
+    h.set('Bad.md', note(['@global broken =']));
+    const source = '2+3\nbroken+1'; h.set('Use.md', note([source]));
+    const index = await h.indexGlobals(t);
+    const view = h.view('Use.md', source, 0); await view.ready;
+    assert.match(view.el.output(), /^5\|PyMath:.*Bad.md:2/);
+    index.update('Bad.md', note(['@global broken = 4']).text);
+    await h.runtime.refreshGlobals(); assert.equal(view.el.output(), '5|5');
+});
+
+test('duplicate and circular globals leave independent math and local overrides working', async t => {
+    const h = await pythonHarness(t);
+    h.set('A.md', note(['@global clash = 1\n@global a = b\n@global b = a']));
+    h.set('B.md', note(['@global clash = 2']));
+    const source = 'clash\na\nclash = 9\nclash+1\nf(a) = a+1\nf(2)\n8';
+    h.set('Use.md', note([source])); await h.indexGlobals(t);
+    const view = h.view('Use.md', source, 0); await view.ready;
+    assert.match(view.el.output(), /Duplicate global/);
+    assert.match(view.el.output(), /Circular global/);
+    assert.match(view.el.output(), /clash = 9\|10\|/);
+    assert.match(view.el.output(), /\|3\|8$/);
+    const definition = h.view('B.md', '@global clash = 2', 0); await definition.ready;
+    assert.match(definition.el.output(), /Duplicate global/);
+});
+
+test('global changes rebuild direct and indirect consumers but leave unrelated notes alone', async t => {
+    const h = await pythonHarness(t);
+    h.set('Globals.md', note(['@global scale = 2\n@global f(x) = x*scale\n@global other = 9']));
+    const index = await h.indexGlobals(t);
+    for (const [path, expression] of [['Direct.md', 'scale+1'], ['Indirect.md', 'f(3)'], ['Other.md', 'other+1']]) {
+        h.set(path, note([expression])); await h.view(path, expression, 0).ready;
+    }
+    const before = h.sent.length;
+    index.update('Globals.md', note(['@global scale = 4\n@global f(x) = x*scale\n@global other = 9']).text);
+    await h.runtime.refreshGlobals();
+    assert.deepEqual([...new Set(h.sent.slice(before).map(request => request.notePath))].sort(), ['Direct.md', 'Indirect.md']);
+    const after = h.sent.length;
+    await h.view('Other.md', 'other+1', 0).ready;
+    assert.equal(h.sent.length, after);
+});
+
+test('comment-only edits preserve calculations, block identity and updated saved source', async t => {
+    const h = await pythonHarness(t);
+    const original = 'x = 5 # first\nx+1'; h.set('A.md', note([original]));
+    const old = h.view('A.md', original, 0); await old.ready; old.unload();
+    const before = h.sent.length, id = Object.keys(h.blocks())[0];
+    const updated = '# Heading\nx = 5 # revised\n\nx+1 # result';
+    const data = note([updated]); h.set('A.md', data);
+    await h.runtime.updateNote('A.md', data.text, data.metadata);
+    const view = h.view('A.md', updated, 0); await view.ready;
+    assert.equal(view.el.output(), 'x = 5|6'); assert.equal(h.sent.length, before);
+    assert.equal(h.blocks()[id].source, updated);
+});
+
+test('new globals resolve previously symbolic references and moved errors report the current line', async t => {
+    const h = await pythonHarness(t);
+    h.set('Globals.md', note(['@global broken = missing']));
+    const index = await h.indexGlobals(t);
+    h.set('Use.md', note(['broken']));
+    const view = h.view('Use.md', 'broken', 0); await view.ready;
+    assert.match(view.el.output(), /Globals.md:2/);
+    index.update('Globals.md', note(['# heading\n@global broken = missing']).text);
+    await h.runtime.refreshGlobals(); assert.match(view.el.output(), /Globals.md:3/);
+    index.update('Globals.md', note(['@global broken = missing\n@global missing = 4']).text);
+    await h.runtime.refreshGlobals(); assert.equal(view.el.output(), '4');
+});
+
+test('syntax errors stay on their line, invalidate earlier values and allow independent calculations', async t => {
+    const h = await pythonHarness(t);
+    const source = 'x = 5\ny = 9\n# explanation\ny =\nx+2\ny+1\ny = 4\ny+1';
+    h.set('A.md', note([source]));
+    const view = h.view('A.md', source, 0); await view.ready;
+    assert.match(view.el.output(), /^x = 5\|y = 9\|PyMath: Line 4:/);
+    assert.match(view.el.output(), /\|7\|PyMath: Line 6: Cannot use 'y'/);
+    assert.match(view.el.output(), /\|y = 4\|5$/);
+});
+
+test('invalid function declarations poison the function until a valid redefinition', async t => {
+    const h = await pythonHarness(t);
+    const source = 'f(t) = t+1\nf(t,t) = t\nf(2)\n2+3\nf(t) = t*3\nf(2)';
+    h.set('A.md', note([source]));
+    const view = h.view('A.md', source, 0); await view.ready;
+    assert.match(view.el.output(), /Line 2:.*unique/);
+    assert.match(view.el.output(), /Cannot use 'f'/);
+    assert.match(view.el.output(), /\|5\|/);
+    assert.match(view.el.output(), /\|6$/);
+});
+
+test('valid lines in partially invalid blocks still track global changes and diagnostic line moves', async t => {
+    const h = await pythonHarness(t);
+    h.set('Globals.md', note(['@global scale = 3']));
+    const index = await h.indexGlobals(t);
+    const source = 'y =\nscale+1'; h.set('Use.md', note([source]));
+    const view = h.view('Use.md', source, 0); await view.ready;
+    assert.match(view.el.output(), /Line 1:.*\|4$/);
+    index.update('Globals.md', note(['@global scale = 5']).text);
+    await h.runtime.refreshGlobals(); assert.match(view.el.output(), /\|6$/);
+    view.unload();
+    const changed = '# new heading\ny =\nscale+1'; const data = note([changed]);
+    h.set('Use.md', data); await h.runtime.updateNote('Use.md', data.text, data.metadata);
+    const next = h.view('Use.md', changed, 0); await next.ready;
+    assert.match(next.el.output(), /Line 2:.*\|6$/);
+});
+
+test('Python errors report original block lines, explain brackets and retain details', async t => {
+    const h = await pythonHarness(t);
+    const source = '# heading\n\nx = (2+3\n4+5\n2+*3\n2+3)';
+    h.set('A.md', note([source]));
+    const view = h.view('A.md', source, 0); await view.ready;
+    assert.match(view.el.output(), /Line 3: Missing closing bracket '\)'\. Details:/);
+    assert.match(view.el.output(), /\|9\|/);
+    assert.match(view.el.output(), /Line 5: Invalid expression/);
+    assert.match(view.el.output(), /Line 6: Unexpected or mismatched closing bracket/);
+});
+
+test('moving a Python error with comments refreshes its displayed line', async t => {
+    const h = await pythonHarness(t);
+    h.set('A.md', note(['2+*3']));
+    const view = h.view('A.md', '2+*3', 0); await view.ready;
+    assert.match(view.el.output(), /Line 1:/); view.unload();
+    const source = '# heading\n\n2+*3'; const data = note([source]);
+    h.set('A.md', data); await h.runtime.updateNote('A.md', data.text, data.metadata);
+    const next = h.view('A.md', source, 0); await next.ready;
+    assert.match(next.el.output(), /Line 3:/);
+});
+
+test('function argument errors provide guidance and global syntax errors keep source provenance', async t => {
+    const h = await pythonHarness(t);
+    h.set('Globals.md', note(['@global broken = (2+3'])); await h.indexGlobals(t);
+    const source = 'f(x) = x+1\nf(1,2)\nbroken\n9';
+    h.set('A.md', note([source]));
+    const view = h.view('A.md', source, 0); await view.ready;
+    assert.match(view.el.output(), /Line 2: Check the function's arguments\. Details:/);
+    assert.match(view.el.output(), /Line 3:.*Globals.md:2.*Missing closing bracket/);
+    assert.match(view.el.output(), /\|9$/);
 });

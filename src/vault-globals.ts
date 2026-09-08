@@ -17,6 +17,7 @@ export function extractGlobals(notePath: string, text: string): GlobalDefinition
         } catch (error) {
             definitions.push({
                 notePath, line: index + 1,
+                name: /^\s*@global\s+([\p{L}_][\p{L}\p{M}\p{N}_]*)/u.exec(line)?.[1],
                 error: error instanceof Error ? error.message : String(error),
             });
         }

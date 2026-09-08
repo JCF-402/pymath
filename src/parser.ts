@@ -1,4 +1,5 @@
-import type { ParsedLine } from "./types";
+import { stripComment } from "./comments";
+import type { ParsedLine, BlockLine } from "./types";
 
     // Recognize a variable name followed by a single assignment sign.
     // Names can contain letters, numbers and underscores,
@@ -13,7 +14,7 @@ import type { ParsedLine } from "./types";
 
 
 export function parseLine(source: string): ParsedLine {
-    const text = source.trim();
+    const text = stripComment(source).trim();
     if (/^@global(?:\s|$)/u.test(text)) {
         const definition = parseLocalLine(text.slice(7));
         if (definition.type === "expression") {
@@ -96,7 +97,7 @@ export function parseBlock(source: string): ParsedLine[] {
     for (const [index, line] of lines.entries()) {
         // Allow blank lines between calculations.
 
-        if (!line.trim()) continue;
+        if (!stripComment(line).trim()) continue;
 
         try {
             parsedLines.push(parseLine(line));
@@ -109,10 +110,27 @@ export function parseBlock(source: string): ParsedLine[] {
         }
     }
 
-    if (parsedLines.length === 0) {
-        throw new Error("Enter a mathematical expression.");
-
-    }
     return parsedLines;
 }
 
+
+// Preserve every calculation's position even when a neighboring line is incomplete.
+export function parseBlockLines(source: string): BlockLine[] {
+    const results: BlockLine[] = [];
+    for (const [index, raw] of source.split(/\r?\n/).entries()) {
+        const expression = stripComment(raw).trim();
+        if (!expression) continue;
+        try {
+            results.push(parseLine(expression));
+        } catch (error) {
+            const global = /^@global(?:\s|$)/u.test(expression);
+            const definition = expression.replace(/^@global\s*/u, "");
+            const target = new RegExp(`^(${namePattern})\\s*(?:=(?!=)|\\([^=]*\\)\\s*=(?!=))`, "u").exec(definition)?.[1];
+            results.push({ type: "invalid", expression,
+                error: `Line ${index + 1}: ${error instanceof Error ? error.message : String(error)}`,
+                ...(target ? { target } : {}), ...(global ? { scope: "global" as const } : {}),
+            });
+        }
+    }
+    return results;
+}

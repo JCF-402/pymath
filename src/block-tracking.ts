@@ -1,7 +1,7 @@
 import type { CachedMetadata } from "obsidian";
-import type { Blocks, ParsedLine } from "./types";
+import type { Blocks } from "./types";
 import { scanPyMathBlocks, matchPyMathBlocks } from "./blocks";
-import { parseBlock } from "./parser";
+import { parseBlockLines } from "./parser";
 
 export function trackNoteBlocks(
     notePath: string,
@@ -23,15 +23,7 @@ export function trackNoteBlocks(
     }
 
     for (const block of matched.blocks) {
-        let lines: ParsedLine[] = [];
-
-        try {
-            lines = parseBlock(block.source);
-        } catch (error) {
-            // Keep identity and source while an expression is incomplete.
-            errors[block.id] =
-                error instanceof Error ? error.message : String(error);
-        }
+        const lines = parseBlockLines(block.source);
 
         blocks[block.id] = {
             id: block.id,

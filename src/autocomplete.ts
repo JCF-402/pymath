@@ -1,3 +1,4 @@
+import { stripComment } from "./comments";
 import { parseLine } from "./parser";
 import { pymathLines } from "./pymath-lines";
 import { extractGlobals } from "./vault-globals";
@@ -14,12 +15,14 @@ const name = String.raw`[\p{L}_][\p{L}\p{M}\p{N}_]*`;
 const signature = new RegExp(`^\\s*(?:@global\\s+)?(${name})\\s*\\(([^()]*)\\)\\s*=(?!=)`, "u");
 
 export function completionQuery(line: string, ch: number): string | null {
-    const prefix = line.slice(0, ch);
+    const code = stripComment(line);
+    if (ch > code.length) return null;
+    const prefix = code.slice(0, ch);
     // Do not offer mathematical names inside strings, comments or directives.
     if (/[#'"@]/.test(prefix.replace(/^\s*@global\s+/, ""))) return null;
     const match = /[\p{L}\p{M}\p{N}_]+$/u.exec(prefix);
     if (!match || !new RegExp(`^${name}$`, "u").test(match[0])) return null;
-    const assignment = /^\s*(?:@global\s+)?[^=]+=(?!=)/u.exec(line);
+    const assignment = /^\s*(?:@global\s+)?[^=]+=(?!=)/u.exec(code);
     if (assignment && ch < assignment[0].length) return null;
     return match[0];
 }
