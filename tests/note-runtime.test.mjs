@@ -869,9 +869,13 @@ test('plot mode replaces the whole block with a PNG and does not overwrite note 
     const source = 'x = 5\nf(x) = sin(x)\n@plot f(x) {Sine curve}\n@range x = -10, 10';
     h.set('Plot.md', note([source]));
     const view = h.view('Plot.md', source, 0); await view.ready;
-    assert.equal(view.el.children.length, 1);
+    assert.equal(view.el.children.length, 2);
     const chart = view.el.children[0];
     assert.equal(chart.tagName, 'img');
+    const download = view.el.children[1].children[0];
+    assert.equal(download.tagName, 'a');
+    assert.equal(download.attributes.href, chart.attributes.src);
+    assert.equal(download.attributes.download, 'Plot-plot-1.png');
     const png = Buffer.from(chart.attributes.src.split(',')[1], 'base64');
     assert.equal(png.subarray(1, 4).toString(), 'PNG');
     assert.equal(png.readUInt32BE(16), 1120); assert.equal(png.readUInt32BE(20), 630);
@@ -889,6 +893,7 @@ test('global plot dependencies refresh the chart and plot failures replace it wi
     index.update('Globals.md', note(['@global scale = 4\n@global f(t) = scale*t']).text);
     await h.runtime.refreshGlobals();
     assert.notEqual(view.el.children[0].attributes.src, image);
+    assert.equal(view.el.children[1].children[0].attributes.href, view.el.children[0].attributes.src);
     view.unload();
     const bad = '@plot sqrt(-1)\n@range t = 0, 10'; const data = note([bad]); h.set('Plot.md', data);
     await h.runtime.updateNote('Plot.md', data.text, data.metadata);
@@ -937,7 +942,7 @@ test('multiple curves share one image and changes to the second curve dependency
     const index = await h.indexGlobals(t);
     const source = '@plot sin(x) {Sine}\n@plot amplitude*cos(x) {Cosine}\n@range x = -10, 10';
     h.set('Plot.md', note([source])); const view = h.view('Plot.md', source, 0); await view.ready;
-    assert.equal(view.el.children.length, 1); assert.equal(view.el.children[0].tagName, 'img');
+    assert.equal(view.el.children.length, 2); assert.equal(view.el.children[0].tagName, 'img');
     const first = view.el.children[0].attributes.src;
     const request = h.sent.findLast(request => request.type === 'plot');
     assert.deepEqual(request.curves.map(curve => curve.tag), ['Sine', 'Cosine']);
@@ -950,4 +955,109 @@ test('a failed later curve reports its own source line rather than silently drop
     const source = '@plot sin(x) {Good}\n# comment\n@plot missing+x {Bad curve}\n@range x = -1, 1';
     h.set('Plot.md', note([source])); const view = h.view('Plot.md', source, 0); await view.ready;
     assert.match(view.el.output(), /Bad curve \(line 3\)/); assert.equal(view.el.children.length, 0);
+});
+
+test('plot customization reaches the backend, controls dimensions, and edits refresh the image', async t => {
+    const h = await pythonHarness(t);
+    let source = '@plot sin(x) {Sine}\n@plot cos(x) {Cosine}\n@range x = -5, 5\n@title Waves\n@xlabel Angle\n@ylabel Amplitude\n@grid off\n@legend top-right\n@size 6, 3\n@color 1 "#ff8800"\n@style 2 dashed\n@width 2 3';
+    h.set('Plot.md', note([source]));
+    let view = h.view('Plot.md', source, 0); await view.ready;
+    const image = view.el.children[0].attributes.src;
+    const png = Buffer.from(image.split(',')[1], 'base64');
+    assert.equal(png.readUInt32BE(16), 840); assert.equal(png.readUInt32BE(20), 420);
+    const request = h.sent.findLast(r => r.type === 'plot');
+    assert.equal(request.options.grid, false);
+    assert.equal(request.options.title, 'Waves');
+    assert.equal(request.curves[0].color, '#ff8800');
+    assert.equal(request.curves[1].style, 'dashed');
+    assert.equal(request.curves[1].width, 3);
+    view.unload();
+    source = source.replace('@grid off', '@grid on');
+    const data = note([source]); h.set('Plot.md', data);
+    await h.runtime.updateNote('Plot.md', data.text, data.metadata);
+    view = h.view('Plot.md', source, 0); await view.ready;
+    assert.notEqual(view.el.children[0].attributes.src, image);
+    assert.equal(view.el.children[1].children[0].attributes.href, view.el.children[0].attributes.src);
+});
+
+test('invalid plot options display useful errors without stopping Python', async t => {
+    const h = await pythonHarness(t);
+    for (const [option, expected] of [
+        ['@size 16, 12', /Line 3:.*area/],
+        ['@grid maybe', /Line 3:.*grid on/],
+        ['@legend nowhere', /Line 3:.*Legend/],
+        ['@style 2 dashed', /Line 3:.*curve numbers/],
+        ['@width 1 0', /Line 3:.*width/],
+        ['@color 1 imaginarycolor', /unknown color/],
+        ['@title One\n@title Two', /Line 4:.*only once/],
+    ]) {
+        const source = '@plot x\n@range x = 0, 1\n' + option;
+        const data = note([source]); h.set('Plot.md', data);
+        await h.runtime.updateNote('Plot.md', data.text, data.metadata);
+        const view = h.view('Plot.md', source, 0); await view.ready;
+        assert.match(view.el.output(), expected);
+        view.unload();
+    }
+});
+
+test('SymPy calculus and algebra operations render through the real note runtime', async t => {
+    const h = await pythonHarness(t);
+    for (const [source, expected] of [
+        ['integrate(t^2, t)', /\\frac\{t\^\{3\}\}\{3\}/],
+        ['integrate(t^2, (t, 0, 3))', / = 9$/],
+        ['integrate(exp(-t), (t, 0, oo))', / = 1$/],
+        ['diff(t^3, t, 2)', /6 t/],
+        ['limit(sin(t)\/t, t, 0)', / = 1$/],
+        ['summation(k, (k, 1, 10))', / = 55$/],
+        ['product(k, (k, 1, 4))', / = 24$/],
+        ['series(exp(t), t, 0, 4)', /O/],
+        ['solve(t^2-4, t)', /-2, 2/],
+        ['solve(t^2+1, t)', /i/],
+        ['solve(1, t)', /\\left\[\\right\]/],
+        ['integrate(sin(t^t), t)', /\\int/],
+        ['f(t) = t^2\nintegrate(f(t), (t, 0, 3))', /9/],
+        ['x = 5\nF(t) = integrate(t^2, t)\nF(3)', /9/],
+    ]) {
+        const data = note([source]); h.set('Calculus.md', data);
+        await h.runtime.updateNote('Calculus.md', data.text, data.metadata);
+        const view = h.view('Calculus.md', source, 0); await view.ready;
+        assert.match(view.el.output(), expected, source); view.unload();
+    }
+});
+
+test('calculus errors recover and definite integrals retain exact stored values', async t => {
+    const h = await pythonHarness(t);
+    const source = 'x = 5\ndiff(x^2, x)\narea = integrate(t, (t, 0, 1))\narea*2';
+    h.set('Calculus.md', note([source]));
+    const view = h.view('Calculus.md', source, 0); await view.ready;
+    assert.match(view.el.output(), /Line 2/);
+    const response = await h.send({type: 'expression', expression: 'area*2', notePath: 'Calculus.md', requestId: crypto.randomUUID()});
+    assert.equal(response.result, '1');
+    const roots = await h.send({type: 'expression', expression: 'solve(t^2-2, t)', decimalPlaces: 3, notePath: 'Calculus.md', requestId: crypto.randomUUID()});
+    assert.equal(roots.result, String.raw`\left[-1.414, 1.414\right]`);
+});
+
+test('calculus notation preserves operators, bounds, results and unevaluated expressions', async t => {
+    const h = await pythonHarness(t);
+    const check = async (expression, pattern, extra = {}) => {
+        const response = await h.send({type: 'expression', expression, notePath: 'Notation.md', requestId: crypto.randomUUID(), ...extra});
+        assert.equal(response.error, undefined, expression);
+        assert.match(response.result, pattern, expression);
+        return response.result;
+    };
+    await check('integrate(t^2, (t, 0, 3))', /\\int\\limits_\{0\}\^\{3\}.* = 9$/);
+    await check('diff(t^3, t, 2)', /\\frac\{d\^\{2\}\}.* = 6 t$/);
+    await check('limit(sin(t)/t, t, 0)', /\\lim_.* = 1$/);
+    await check('summation(k, (k, 1, 10))', /\\sum_.* = 55$/);
+    await check('product(k, (k, 1, 4))', /\\prod_.* = 24$/);
+    await check('integrate(t, (t, 0, 1))', / = 0\.500$/, {decimalPlaces: 3});
+    const unresolved = await check('integrate(sin(t^t), t)', /\\int/);
+    assert.equal(unresolved.includes(' = '), false);
+    await check('integrate(t^2, (t, 0, 3))', /^A = \\int.* = 9$/, {type: 'assignment', variable: 'A', showSubstitutionSteps: true});
+    await check('A+1', /^10$/);
+    await check('integrate(t^2, t)', /^F.* = \\int.* = /, {type: 'function', name: 'F', parameters: ['t']});
+    await check('F(3)', / = 9$/);
+    await check('t+1', / = t \+ 1$/, {type: 'function', name: 'integrate', parameters: ['t']});
+    const shadowed = await check('integrate(2)', / = 3$/);
+    assert.equal(shadowed.includes('\\int'), false);
 });

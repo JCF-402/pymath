@@ -1,9 +1,22 @@
+import { legendPositions, lineStyles } from "./plot-options";
 import type { Blocks, BlockLine } from "./types";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === "object" &&
         value !== null &&
         !Array.isArray(value);
+}
+
+function validOptions(value: unknown): boolean {
+    if (value === undefined) return true;
+    if (!isRecord(value)) return false;
+    return ["title", "xlabel", "ylabel"].every(key => value[key] === undefined || typeof value[key] === "string") &&
+        (value.grid === undefined || typeof value.grid === "boolean") &&
+        (value.legend === undefined || (typeof value.legend === "string" && legendPositions.includes(value.legend))) &&
+        (value.size === undefined || (Array.isArray(value.size) && value.size.length === 2 &&
+            value.size.every(n => typeof n === "number" && Number.isFinite(n)) &&
+            value.size[0] >= 2 && value.size[0] <= 16 && value.size[1] >= 2 && value.size[1] <= 12 &&
+            value.size[0] * value.size[1] <= 120));
 }
 
 function isParsedLine(value: unknown): value is BlockLine {
@@ -19,9 +32,12 @@ function isParsedLine(value: unknown): value is BlockLine {
 
     switch (value.type) {
         case "plot":
-            return (value.curves === undefined || (Array.isArray(value.curves) && value.curves.length > 0 && value.curves.length <= 10 &&
+            return validOptions(value.options) && (value.curves === undefined || (Array.isArray(value.curves) && value.curves.length > 0 && value.curves.length <= 10 &&
                 value.curves.every(curve => isRecord(curve) && typeof curve.expression === "string" &&
                     typeof curve.sourceLine === "number" && Number.isInteger(curve.sourceLine) && curve.sourceLine > 0 &&
+                    (curve.color === undefined || typeof curve.color === "string") &&
+                    (curve.style === undefined || (typeof curve.style === "string" && lineStyles.includes(curve.style))) &&
+                    (curve.width === undefined || (typeof curve.width === "number" && curve.width >= 0.25 && curve.width <= 8)) &&
                     (curve.tag === undefined || typeof curve.tag === "string") && (curve.unit === undefined || typeof curve.unit === "string")))) &&
                 typeof value.variable === "string" && typeof value.rangeStart === "string" &&
                 typeof value.rangeEnd === "string" && Number.isInteger(value.sourceLine) && typeof value.sourceLine === "number" && value.sourceLine > 0 &&

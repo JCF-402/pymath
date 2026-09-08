@@ -1,3 +1,4 @@
+import type { PlotOptions } from "./plot-options";
 
 import { MyPluginSettings } from "./settings";
 
@@ -74,7 +75,8 @@ export type GlobalDefinition = {
 } & (Exclude<ParsedLine, { type: "expression" }> | { error: string; name?: string });
 
 export interface PlotLine {
-    curves?: { expression: string; tag?: string; unit?: string; sourceLine: number }[];
+    options?: PlotOptions;
+    curves?: { expression: string; tag?: string; unit?: string; sourceLine: number; color?: string; style?: string; width?: number }[];
     type: "plot";
     expression: string;
     variable: string;

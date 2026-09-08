@@ -223,6 +223,7 @@ export class NoteRuntime {
             const rendered = this.blockOutput.render(
                 el, snapshot.errors[blockId], this.coordinator.results.results.get(blockId),
                 isPlotBlock(snapshot.blocks.find(block => block.id === blockId)?.source ?? ""),
+                `${(notePath.split("/").pop() ?? "pymath").replace(/\.md$/i, "").replace(/[<>:"/\\|?*\p{Cc}]/gu, "-")}-plot-${snapshot.blocks.findIndex(block => block.id === blockId) + 1}.png`,
             );
             changed = rendered || changed;
         });

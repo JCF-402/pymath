@@ -4,7 +4,7 @@ import io
 import ast
 import tokenize
 from decimal import Decimal
-from sympy import  latex, Symbol, Lambda, Function
+from sympy import latex, Symbol, Lambda, Function, Integral, Derivative, Limit, Sum, Product
 from sympy.parsing.sympy_parser import (parse_expr,standard_transformations,implicit_multiplication_application,
                                         convert_xor)
 
@@ -115,7 +115,10 @@ def number_latex(value, request):
     mode = request.get("numberFormat", "automatic")
     places = request.get("decimalPlaces")
     fixed = type(places) is int and 0 <= places <= 20
-    if value.is_real is not True or value.is_finite is not True:
+    if isinstance(value, (list, tuple)):
+        left, right = (r"\left[", r"\right]") if isinstance(value, list) else (r"\left(", r"\right)")
+        return left + ", ".join(number_latex(item, request) for item in value) + right
+    if getattr(value, "is_real", None) is not True or getattr(value, "is_finite", None) is not True:
         displayed, _ = display_value(value, request)
         return latex(displayed)
     magnitude = Decimal(str(value.evalf(15))).adjusted() if value != 0 else 0
@@ -137,6 +140,39 @@ def number_latex(value, request):
     if not fixed and '.' in text:
         text = text.rstrip('0').rstrip('.')
     return text[1:] if text.startswith('-') and Decimal(text) == 0 else text
+
+
+
+def calculus_latex(source, variables, value, request):
+    """Build notation from the outer call without changing evaluation or stored values."""
+    constructors = {"integrate": Integral, "diff": Derivative, "limit": Limit,
+                    "summation": Sum, "product": Product}
+    try:
+        normalized = source.replace("^", "**")
+        call = ast.parse(normalized, mode="eval").body
+        if not isinstance(call, ast.Call) or not isinstance(call.func, ast.Name):
+            return None
+        name = call.func.id
+        # A local/global function with this name retains its ordinary call display.
+        if name not in constructors or name in variables:
+            return None
+        def argument(node):
+            return parse_expr(ast.get_source_segment(normalized, node),
+                              local_dict=variables.copy(), transformations=transformations)
+        args = [argument(node) for node in call.args]
+        kwargs = {item.arg: argument(item.value) for item in call.keywords if item.arg}
+        if any(item.arg is None for item in call.keywords):
+            return None
+        if name == "diff":
+            kwargs["evaluate"] = False
+        written = constructors[name](*args, **kwargs)
+        operation = latex(written)
+        result = number_latex(value, request)
+        # An unresolved integral/derivative is already its own result.
+        return operation if written == value or operation == result else operation + " = " + result
+    except Exception:
+        # Display enrichment must never turn a successful calculation into an error.
+        return None
 
 
 def explain_error(error, source):
@@ -239,26 +275,48 @@ def render_plot(request, variables, failures):
             sampled.append(sample(curve))
         except Exception as error:
             raise ValueError(f"Curve {curve.get('tag') or curve.get('expression')} (line {curve.get('sourceLine', '?')}): {error}") from error
-    figure = Figure(figsize=(8, 4.5), dpi=140, layout="constrained")
+    options = request.get("options") or {}
+    size = options.get("size", [8, 4.5])
+    if (not isinstance(size, list) or len(size) != 2 or
+            not all(isinstance(n, (int, float)) and math.isfinite(n) for n in size) or
+            not 2 <= size[0] <= 16 or not 2 <= size[1] <= 12 or size[0] * size[1] > 120):
+        raise ValueError("Invalid plot size. Use width 2–16, height 2–12 inches, area at most 120.")
+    positions = {"auto": "best", "top-right": "upper right", "top-left": "upper left", "bottom-right": "lower right", "bottom-left": "lower left", "center": "center"}
+    legend_option = options.get("legend", "auto")
+    if legend_option not in positions and legend_option != "off":
+        raise ValueError("Invalid legend position.")
+    figure = Figure(figsize=size, dpi=140, layout="constrained")
     canvas = FigureCanvasAgg(figure)
     try:
         axes = figure.add_subplot(111)
         colors = ["#738fe6", "#e69851", "#53b59d", "#d775a2", "#ad8bd4", "#c3b24f", "#65afce", "#c97463", "#8aa866", "#a0a0a0"]
         for index, (curve, ys) in enumerate(zip(curves, sampled)):
-            axes.plot(xs, ys, color=colors[index], linewidth=2, label=curve.get("tag") or curve["expression"])
-        if len(curves) > 1:
-            legend = axes.legend(framealpha=0, labelcolor="#999999")
+            from matplotlib.colors import is_color_like
+            color, style, width = curve.get("color", colors[index]), curve.get("style", "solid"), curve.get("width", 2)
+            if not is_color_like(color):
+                raise ValueError(f"Curve {index + 1}: unknown color '{color}'.")
+            if style not in ("solid", "dashed", "dotted", "dashdot"):
+                raise ValueError(f"Curve {index + 1}: invalid line style.")
+            if not isinstance(width, (int, float)) or not 0.25 <= width <= 8:
+                raise ValueError(f"Curve {index + 1}: line width must be between 0.25 and 8 points.")
+            axes.plot(xs, ys, color=color, linestyle=style, linewidth=width, label=curve.get("tag") or curve["expression"])
+        if legend_option != "off" and (len(curves) > 1 or "legend" in options):
+            legend = axes.legend(loc=positions[legend_option], framealpha=0, labelcolor="#999999")
             for text in legend.get_texts():
                 text.set_parse_math(False)
         axes.set_xlim(*bounds)
-        axes.set_xlabel(independent, color="#999999")
-        axes.set_ylabel((curves[0].get("unit") if all(curve.get("unit") == curves[0].get("unit") for curve in curves) else None) or "value", color="#999999", parse_math=False)
-        if len(curves) == 1 and request.get("tag"):
-            axes.set_title(request["tag"], color="#999999", parse_math=False)
+        axes.set_xlabel(options.get("xlabel", independent), color="#999999", parse_math=False)
+        axes.set_ylabel(options.get("ylabel") or (curves[0].get("unit") if all(curve.get("unit") == curves[0].get("unit") for curve in curves) else None) or "value", color="#999999", parse_math=False)
+        title = options.get("title", request.get("tag") if len(curves) == 1 else None)
+        if title:
+            axes.set_title(title, color="#999999", parse_math=False)
         axes.tick_params(colors="#999999")
         for spine in axes.spines.values():
             spine.set_color("#888888")
-        axes.grid(True, alpha=0.25)
+        if options.get("grid", True):
+            axes.grid(True, alpha=0.25)
+        else:
+            axes.grid(False)
         figure.patch.set_alpha(0)
         axes.patch.set_alpha(0)
         buffer = io.BytesIO()
@@ -408,7 +466,8 @@ for line in sys.stdin:
 
             # Format the definition as f(x) = ...
             signature = Function(name)(*parameter_symbols)
-            result_latex = f"{latex(signature)} = {latex(body)}"
+            calculation = calculus_latex(source, local_values, body, request)
+            result_latex = f"{latex(signature)} = {calculation or latex(body)}"
 
         else:
 
@@ -420,6 +479,7 @@ for line in sys.stdin:
 
             displayed, approximated = display_value(expression, request)
             relation = " = "
+            calculation = calculus_latex(source, variables, expression, request)
             if variable is not None:
                 result_latex = latex(Symbol(variable)) + relation + number_latex(expression, request)
 
@@ -457,11 +517,14 @@ for line in sys.stdin:
                     if approximated:
                         result_latex += " = " + number_latex(expression, request)
 
+                if calculation:
+                    result_latex = latex(Symbol(variable)) + " = " + calculation
+
                 # Format using the previous values before storing the new one.
                 if not is_global:
                     note_values[variable] = expression
             else:
-                result_latex = number_latex(expression, request)
+                result_latex = calculation or number_latex(expression, request)
                 # Display a standalone user-defined call without evaluating
                 # away its name or substituting its written arguments.
                 try:

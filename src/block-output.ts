@@ -15,9 +15,10 @@ export class BlockOutput {
         error: string | undefined,
         results: Map<number, LineResult> | undefined,
         plotMode = false,
+        downloadName = "pymath-plot.png",
     ): boolean {
         const lines = [...(results ?? [])].sort(([a], [b]) => a - b);
-        const key = JSON.stringify([error ?? null, lines, plotMode]);
+        const key = JSON.stringify([error ?? null, lines, plotMode, downloadName]);
         const previous = this.rendered.get(el);
         const nodes = Array.from(el.childNodes);
 
@@ -34,9 +35,15 @@ export class BlockOutput {
             const chart = lines.map(([, result]) => result).find(result => "image" in result && result.image);
             if (failure && "error" in failure) el.setText(`PyMath: ${failure.error}`);
             else if (chart && "image" in chart && chart.image) {
+                const url = `data:image/png;base64,${chart.image}`;
                 el.createEl("img", { cls: "pymath-plot", attr: {
-                    src: `data:image/png;base64,${chart.image}`, alt: "PyMath function plot",
+                    src: url, alt: "PyMath function plot",
                 } });
+                el.createDiv({ cls: "pymath-plot-actions" }).createEl("a", {
+                    cls: "pymath-plot-download",
+                    text: "Save PNG",
+                    attr: { href: url, download: downloadName, "aria-label": "Save plot as PNG" },
+                });
             }
         } else {
             el.empty();

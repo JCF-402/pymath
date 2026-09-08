@@ -1,3 +1,4 @@
+import { isPlotDirective } from "./plot-options";
 import { calculationLines } from "./source-lines";
 import type { Blocks, BlockLine, GlobalDefinition } from "./types";
 
@@ -40,7 +41,7 @@ export function createNoteRebuild(
         .sort((a, b) => a.order - b.order);
 
     for (const block of noteBlocks) {
-        const sourceLines = calculationLines(block.source).filter(line => !/^\s*@(plot|range)(?:\s|$)/u.test(block.source.split(/\r?\n/)[line - 1]!));
+        const sourceLines = calculationLines(block.source).filter(line => !isPlotDirective(block.source.split(/\r?\n/)[line - 1]!));
         for (const [lineIndex, parsed] of block.lines.entries()) {
             requests.push({
                 ...parsed,
