@@ -1,5 +1,6 @@
 import obsidianmd from 'eslint-plugin-obsidianmd';
 import globals from 'globals';
+import tseslint from 'typescript-eslint';
 import { globalIgnores, defineConfig } from 'eslint/config';
 
 export default defineConfig(
@@ -29,4 +30,11 @@ export default defineConfig(
 		},
 	},
 	...obsidianmd.configs.recommended,
+	{
+		files: ['tests/**/*.mjs'],
+		extends: [tseslint.configs.disableTypeChecked],
+		languageOptions: {
+			globals: globals.node,
+		},
+	},
 );

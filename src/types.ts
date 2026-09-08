@@ -1,6 +1,10 @@
 
 import { MyPluginSettings } from "./settings";
 
+export type LineResult =
+    | { result: string }
+    | { error: string };
+
 // Matches the JSON currently printed by backend.py.
 export type PythonResponse  = 
 | {
@@ -16,7 +20,10 @@ export type PythonResponse  =
 
 
 export type Blocks = {
-    source: string,
+    id: string;
+    notePath: string;
+    source: string;
+    order: number;
     lines: ParsedLine[],
 
 }
@@ -30,6 +37,7 @@ export type Functions = {
 export type ParsedLine = 
     | {
         type: "assignment";
+        scope?: "global";
         variable: string;
         expression: string;
     }
@@ -39,6 +47,7 @@ export type ParsedLine =
     }
     | {
         type: "function";
+        scope?: "global";
         name: string;
         parameters: string[];
         expression: string;
@@ -50,3 +59,8 @@ export interface PyMathData {
     variables: Record<string, Variables>;
     functions: Record<string,Functions>;
 }
+
+export type GlobalDefinition = {
+    notePath: string;
+    line: number;
+} & (Exclude<ParsedLine, { type: "expression" }> | { error: string });

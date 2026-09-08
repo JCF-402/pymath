@@ -14,6 +14,18 @@ import type { ParsedLine } from "./types";
 
 export function parseLine(source: string): ParsedLine {
     const text = source.trim();
+    if (/^@global(?:\s|$)/u.test(text)) {
+        const definition = parseLocalLine(text.slice(7));
+        if (definition.type === "expression") {
+            throw new Error("@global needs a variable or function definition.");
+        }
+        return { ...definition, scope: "global" };
+    }
+    return parseLocalLine(text);
+}
+
+function parseLocalLine(source: string): ParsedLine {
+    const text = source.trim();
 
     if (!text) {
         throw new Error("Enter a mathematical expression.");

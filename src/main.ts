@@ -1,25 +1,33 @@
-import {MarkdownView,Modal,Plugin,FileSystemAdapter, loadMathJax, renderMath, finishRenderMath} from 'obsidian';
-import {DEFAULT_SETTINGS,MyPluginSettings,SampleSettingTab,} from './settings';
+import {MarkdownView,Modal,Plugin,FileSystemAdapter,Notice} from 'obsidian';
+import {DEFAULT_SETTINGS,SampleSettingTab,} from './settings';
 
-import {PyMathData, PythonResponse} from "./types"
+import {PyMathData} from "./types"
 import { createPythonResponseReceiver } from './python-response';
-import { parseBlock} from './parser';
+import { validateSavedBlocks } from './block-data';
+import { NoteRuntime } from './note-runtime';
+import { VaultGlobals } from './vault-globals';
+import { PyMathSuggest } from './editor-suggest';
+import { StateSaver } from './state-saver';
+import { PythonTransport } from './python-transport';
 
 import {ChildProcessWithoutNullStreams, spawn} from "node:child_process";
 import * as path from "node:path";
-import { json } from 'node:stream/consumers';
-import { error } from 'node:console';
 
 
 export default class PyMath extends Plugin {
 	pythonProcess: ChildProcessWithoutNullStreams | null = null;
+	pythonTransport: PythonTransport | null = null;
 	savedData: PyMathData = {
 		settings: DEFAULT_SETTINGS,
 		blocks: {},
 		variables: {},
 		functions: {}
 	};
-	pendingBlocks = new Map<string, HTMLElement>();
+	noteRuntime: NoteRuntime | null = null;
+	stateSaver: StateSaver | null = null;
+	private unloading = false;
+	private globalIndex: VaultGlobals | null = null;
+	private restarting: Promise<void> | null = null;
 
 	async onload() {
 		const data = await this.loadData() as Partial<PyMathData> | null;
@@ -32,102 +40,89 @@ export default class PyMath extends Plugin {
 		this.savedData = {
 			settings: {
 				...DEFAULT_SETTINGS,
-				...data?.settings
+				...data?.settings,
+				// Preserve this development checkout's existing Python environment.
+				pythonPath: data?.settings?.pythonPath ??
+					'/Users/jomarcardona/miniforge/envs/python-general/bin/python',
 			},
-			blocks: data?.blocks ?? {},
+			blocks: validateSavedBlocks(data?.blocks),
 			variables: data?.variables ?? {},
 			functions: data?.functions ?? {},
 		};
 
-		// For now spawn python process onload()
-		const adapter = this.app.vault.adapter;
-		if (!(adapter instanceof FileSystemAdapter)) {
-			throw new Error("PyMath requires desktop Obsidian.");
-		}
-		// backend.py needs to be in the plugin directory
-		const backendPath = path.join(
-			adapter.getBasePath(),
-			this.app.vault.configDir,
-			"plugins",
-			this.manifest.id,
-			"backend.py"
+		this.stateSaver = new StateSaver(
+			() => this.savedData,
+			state => this.saveData(state),
+			error => console.error('PyMath state save failed:', error),
 		);
-		const pythonPath = "/Users/jomarcardona/miniforge/envs/python-general/bin/python";
-		this.pythonProcess = spawn(pythonPath,[backendPath]);
-		this.pythonProcess.stdout.setEncoding("utf8");
-		this.pythonProcess.stderr.setEncoding("utf8");
 
-		const receiveResponse = createPythonResponseReceiver(
-			(response) => this.handlePythonResponse(response),
-			(error) => console.error('Invalid Python response:', error),
-		);
-		const stdout = this.pythonProcess.stdout;
-		stdout.on('data', receiveResponse);
-		this.register(() => stdout.off('data', receiveResponse));
+		this.unloading = false;
+		const transport = this.startPython(this.savedData.settings.pythonPath);
 
-		this.pythonProcess.stderr.on("data",(data: string) => {
-			console.error("Python error:", data);
+		const globals: VaultGlobals = new VaultGlobals(this.app, () => runtime.refreshGlobals());
+		this.globalIndex = globals;
+		this.register(() => globals.close());
+		const runtime: NoteRuntime = new NoteRuntime(this.app, transport, {
+			getGlobals: () => globals.getDefinitions(),
+			getBlocks: () => this.savedData.blocks,
+			setBlocks: blocks => {
+				this.savedData.blocks = blocks;
+				this.stateSaver?.schedule();
+			},
+			showSubstitutionSteps: () => this.savedData.settings.showSubstitutionSteps,
 		});
-		
+		this.noteRuntime = runtime;
+		this.registerEditorSuggest(new PyMathSuggest(this.app, globals));
+		this.register(() => runtime.close());
 
+		this.registerEvent(
+			this.app.metadataCache.on('changed', (file, text, metadata) => {
+				const notePath = file.path;
+				globals.update(notePath, text);
+				const revision = globals.revision(notePath);
+				void globals.ready.then(async () => {
+					if (globals.revision(notePath) !== revision || file.path !== notePath) return;
+					await runtime.updateNote(notePath, text, metadata);
+				}).catch((error: unknown) => {
+					console.error('PyMath note update failed:', error);
+				});
+			}),
+		);
 
-		this.registerMarkdownCodeBlockProcessor("pymath", async (source: string, el: HTMLElement, ctx) => {
-		// Whenever a block is processed we need to check if the text changed with respect to what is 
-		// stored in savedData. 
-		// If the text is the same then we don't need to parse again and we probably don't need to turn on 
-		// the python process. Which is another thing we need to check, if the process exists or not already.
-		let requestId: string | undefined;
-		
-		try {
-		
-			const lines = parseBlock(source);
+		this.registerEvent(
+			this.app.vault.on('delete', file => {
+				globals.removePath(file.path);
+				void runtime.removePath(file.path).catch((error: unknown) => {
+					console.error('PyMath path cleanup failed:', error);
+				});
+			}),
+		);
 
-			// Ensure Mathjax is ready before Python can return a result. 
-			await loadMathJax();
-			const stdin = this.pythonProcess?.stdin;
-			if (!stdin || stdin.destroyed || !stdin.writable) {
-				throw new Error("Python is not running");
-			}
-			el.empty();
+		this.registerEvent(
+			this.app.vault.on('rename', (file, oldPath) => {
+				globals.renamePath(oldPath, file.path);
+				void runtime.renamePath(oldPath, file.path).catch((error: unknown) => {
+					console.error('PyMath path rename failed:', error);
+				});
+			}),
+		);
 
-			for (const parsed of lines) {
-				const output = el.createDiv();
-				output.setText("Calculating...");
+		// Views display note results; only the coordinator sends calculations.
+		this.registerMarkdownCodeBlockProcessor('pymath', (source, el, ctx) =>
+			globals.ready.then(() => runtime.registerBlock(source, el, ctx)),
+		);
 
-				requestId = crypto.randomUUID();
-				const id = requestId
-				// Store the destination before sending the request. 
-			    this.pendingBlocks.set(id,output);
-
-				try {
-					stdin.write(JSON.stringify({
-						...parsed,
-						requestId: id,
-						notePath: ctx.sourcePath,
-					}) + "\n",
-					(error) => {
-						if (!error) return;
-
-						this.pendingBlocks.delete(id);
-						output.setText(`PyMath: ${error.message}`);
-					});
-				} catch (error) {
-					this.pendingBlocks.delete(requestId);
-					const message = error instanceof Error ? error.message : String(error);
-					output.setText(`PyMath: ${message}`);
-				}
-			}
-
-	}
-	catch (error) {
-		if (requestId) {
-			this.pendingBlocks.delete(requestId);
-		}
-		const message = error instanceof Error ? error.message : String(error);
-		el.setText(`PyMath: ${message}`)
-	}
-
-	});
+		this.addCommand({
+			id: 'restart-python',
+			name: 'Restart Python',
+			callback: () => {
+				void this.restartPython().catch((error: unknown) => {
+					if (this.unloading) return;
+					console.error('PyMath restart failed:', error);
+					new Notice('Python could not restart. Check the Python executable setting.');
+				});
+			},
+		});
 
 		// Use this later to / add PyMath block to editor.
 		// This adds a complex command that can check whether the current state of the app allows execution of the command
@@ -158,56 +153,98 @@ export default class PyMath extends Plugin {
 
 	}
 
-	// on unload the plugin must deactivate the running Python process.
-	// Additional details
-	onunload() {
-		this.pythonProcess?.kill();
+	private startPython(pythonPath: string): PythonTransport {
+		if (this.unloading) throw new Error('PyMath is unloading.');
+		const adapter = this.app.vault.adapter;
+		if (!(adapter instanceof FileSystemAdapter)) {
+			throw new Error('PyMath requires desktop Obsidian.');
+		}
+		const backendPath = path.join(
+			adapter.getBasePath(), this.app.vault.configDir,
+			'plugins', this.manifest.id, 'backend.py',
+		);
+		const python = spawn(pythonPath, [backendPath]);
+		const transport = new PythonTransport((text, callback) => {
+			if (python.stdin.destroyed || !python.stdin.writable) {
+				callback(new Error('Python is not running.'));
+				return;
+			}
+			python.stdin.write(text, callback);
+		});
+		this.pythonProcess = python;
+		this.pythonTransport = transport;
+		python.stdout.setEncoding('utf8');
+		python.stderr.setEncoding('utf8');
+
+		const onError = (error: Error) => transport.close(error);
+		const receiveResponse = createPythonResponseReceiver(
+			response => { transport.accept(response); },
+			error => transport.close(
+				error instanceof Error ? error : new Error(String(error)),
+			),
+		);
+		const onStderr = (text: string) => console.error('PyMath Python:', text);
+		python.on('error', onError);
+		python.stdin.on('error', onError);
+		python.stdout.on('error', onError);
+		python.stderr.on('error', onError);
+		python.stdout.on('data', receiveResponse);
+		python.stderr.on('data', onStderr);
+
+		// Keep error handlers until the process and its streams have closed.
+		python.once('close', () => {
+			transport.close(new Error('Python exited.'));
+			python.off('error', onError);
+			python.stdin.off('error', onError);
+			python.stdout.off('error', onError);
+			python.stderr.off('error', onError);
+			python.stdout.off('data', receiveResponse);
+			python.stderr.off('data', onStderr);
+			// A late close from the old process must not clear its replacement.
+			if (this.pythonProcess === python) this.pythonProcess = null;
+		});
+		return transport;
+	}
+
+	private stopPython(): void {
+		const python = this.pythonProcess;
+		const transport = this.pythonTransport;
 		this.pythonProcess = null;
-		this.pendingBlocks.clear()
+		this.pythonTransport = null;
+		transport?.close(new Error('Python stopped.'));
+		python?.kill();
 	}
 
-	handlePythonResponse(response: PythonResponse) {
-		const requestId = response.requestId;
-
-		if (typeof requestId !== "string") {
-			if ("error" in response) {
-			console.error("PyMath received an unlinked error:", response.error)
-		}
-		return;
+	restartPython(): Promise<void> {
+		if (this.restarting) return this.restarting;
+		const restart = this.performRestart();
+		this.restarting = restart;
+		void restart.finally(() => {
+			if (this.restarting === restart) this.restarting = null;
+		}).catch(() => {});
+		return restart;
 	}
 
+	private async performRestart(): Promise<void> {
+		this.stopPython();
+		const transport = this.startPython(this.savedData.settings.pythonPath);
+		await this.noteRuntime?.restart(transport);
+	}
 
-		const el = this.pendingBlocks.get(requestId);
-		this.pendingBlocks.delete(requestId);
-
-		if (!el) return;
-
-		if ("error" in response) {
-			el.setText(`PyMath: ${response.error}`)
-			return;
-		}
-		
-
-		try {
-			// Convert pythons latex into a formatted math element.
-			const math = renderMath(response.result, true)
-			// Replace "Calculating..." with the rendered math.
-			el.empty();
-			el.appendChild(math);
-
-			// Finish updating MathJax's styles.
-			void finishRenderMath().catch((error: unknown) => {
-				console.error("PyMath math styling failed:", error);
-			});
-		} catch (error) {
-			const message = error instanceof Error ? error.message: String(error);
-			el.setText(`PyMath: ${message}`);
-		}
-		
+	onunload() {
+		this.unloading = true;
+		this.globalIndex?.close();
+		this.globalIndex = null;
+		this.noteRuntime?.close();
+		this.noteRuntime = null;
+		this.stopPython();
+		void this.stateSaver?.close().catch((error: unknown) => {
+			console.error('PyMath final save failed:', error);
+		});
 	}
 
 	async saveState() {
-		await this.saveData(this.savedData);
+		await this.stateSaver?.saveNow();
 	}
 
 }
