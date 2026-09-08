@@ -83,7 +83,7 @@ function note(sources) {
 }
 
 function setup(send) {
-    let blocks = {}, showSteps = false, reads = 0, globals;
+    let blocks = {}, showSteps = false, reads = 0, globals, display;
     const files = new Map(), contents = new Map();
     const app = {
         vault: {
@@ -94,6 +94,7 @@ function setup(send) {
         metadataCache: { getFileCache: file => contents.get(file.path)?.metadata ?? null },
     };
     const runtime = new NoteRuntime(app, { send }, {
+        getDisplay: () => display,
         getGlobals: () => globals?.getDefinitions(),
         getBlocks: () => blocks,
         setBlocks: value => { blocks = value; },
@@ -126,6 +127,7 @@ function setup(send) {
     }
     return { app, runtime, set, view, remove, rename, blocks: () => blocks, reads: () => reads,
         showSteps(value) { showSteps = value; },
+        display(value) { display = value; },
         async indexGlobals(t) {
             globals = new VaultGlobals(app, () => runtime.refreshGlobals());
             t.after(() => globals.close());
@@ -747,4 +749,86 @@ test('function argument errors provide guidance and global syntax errors keep so
     assert.match(view.el.output(), /Line 2: Check the function's arguments\. Details:/);
     assert.match(view.el.output(), /Line 3:.*Globals.md:2.*Missing closing bracket/);
     assert.match(view.el.output(), /\|9$/);
+});
+
+test('curated built-ins evaluate in the actual SymPy parser', async t => {
+    const h = await pythonHarness(t);
+    const expressions = ['sin(0)', 'cos(0)', 'tan(0)', 'asin(0)', 'acos(1)', 'atan(0)',
+        'sqrt(4)', 'exp(0)', 'log(E)', 'log(8,2)', 'Abs(-2)', 'factorial(3)', 'floor(3/2)',
+        'ceiling(3/2)', 'simplify(x+x)', 'expand((x+1)^2)', 'factor(x^2-1)',
+        'diff(x^2,x)', 'integrate(x,x)', 'pi', 'E', 'I', 'oo'];
+    const source = expressions.join('\n'); h.set('Builtins.md', note([source]));
+    const view = h.view('Builtins.md', source, 0); await view.ready;
+    assert.doesNotMatch(view.el.output(), /PyMath:/);
+    assert.equal(view.el.children.length, expressions.length);
+    assert.match(view.el.output(), /^0\|1\|0\|0\|0\|0\|2\|1\|1\|3\|2\|6\|1\|2\|/);
+});
+
+test('numeric final results approximate while substitution steps and stored values stay exact', async t => {
+    const h = await pythonHarness(t); h.showSteps(true);
+    const source = 'y = 500000\nx = sin(y)*10\nx - sin(y)*10\nr = 1/3\nr*3\nsin(z)';
+    h.set('A.md', note([source]));
+    const view = h.view('A.md', source, 0); await view.ready;
+    const output = view.el.output();
+    assert.match(output, /x = .*sin.*500000.* = /);
+    assert.match(output, / = 1\.778/);
+    assert.match(output, /\|0\|r = .* = 0\.333/);
+    assert.match(output, /\|1\|.*sin.*z/);
+    assert.doesNotMatch(output, /PyMath:/);
+});
+
+test('plain numeric expressions and assignments approximate without turning integers or symbols into decimals', async t => {
+    const h = await pythonHarness(t);
+    const source = 'sin(5000)\nx = sqrt(2)\nx^2\nsin(0)\nz+1';
+    h.set('A.md', note([source]));
+    const view = h.view('A.md', source, 0); await view.ready;
+    assert.match(view.el.output(), /^-0\.987/);
+    assert.match(view.el.output(), /x = 1\.414/);
+    assert.match(view.el.output(), /\|2\|0\|z \+ 1$/);
+});
+
+test('display settings refresh visible results and preserve exact stored values', async t => {
+    const h = await pythonHarness(t);
+    h.display({ precision: 4, numberFormat: 'decimal' });
+    const source = 'x = 1/3\nx*3\nsin(5000)\n1/10000000';
+    h.set('A.md', note([source])); const view = h.view('A.md', source, 0); await view.ready;
+    assert.equal(view.el.output(), 'x = 0.3333|1|-0.988|0.0000001');
+    h.display({ precision: 6, numberFormat: 'scientific' });
+    await h.runtime.refreshGlobals();
+    assert.match(view.el.output(), /x = 3\.33333 \\times 10\^\{-1\}/);
+    assert.match(view.el.output(), /1 \\times 10\^\{-7\}/);
+    const exact = await h.send({ type: 'expression', expression: 'x*3', notePath: 'A.md', requestId: crypto.randomUUID() });
+    assert.equal(exact.result, '1');
+});
+
+test('decimal places set fixed fractional digits and refresh without changing exact values', async t => {
+    const h = await pythonHarness(t);
+    h.display({ precision: 3, numberFormat: 'automatic', decimalPlaces: 2 });
+    const source = 'x = 1/3\nx*3\n12345+1/8\n-1/10000';
+    h.set('A.md', note([source])); const view = h.view('A.md', source, 0); await view.ready;
+    assert.equal(view.el.output(), 'x = 0.33|1.00|12345.12|0.00');
+    h.display({ precision: 3, numberFormat: 'decimal', decimalPlaces: 5 });
+    await h.runtime.refreshGlobals();
+    assert.equal(view.el.output(), 'x = 0.33333|1.00000|12345.12500|-0.00010');
+    h.display({ precision: 3, numberFormat: 'scientific', decimalPlaces: 2 });
+    await h.runtime.refreshGlobals();
+    assert.match(view.el.output(), /x = 3\.33 \\times 10\^\{-1\}/);
+});
+
+test('unit labels render after results without affecting stored values or propagating', async t => {
+    const h = await pythonHarness(t); h.showSteps(true);
+    const source = 'distance = 100 [m] # length\ntime = 5 [s]\nspeed = distance/time [m/s]\nspeed*2';
+    h.set('A.md', note([source])); const view = h.view('A.md', source, 0); await view.ready;
+    assert.match(view.el.output(), /distance = 100\\,\\text\{m\}/);
+    assert.match(view.el.output(), /speed = .*20\\,\\text\{m\/s\}\|40$/);
+    assert.doesNotMatch(view.el.output(), /PyMath:/);
+});
+
+test('global variables and functions accept display labels without making units dependencies', async t => {
+    const h = await pythonHarness(t);
+    h.set('Globals.md', note(['@global speed = 20 [m/s]\n@global travel(t) = speed*t [m]']));
+    await h.indexGlobals(t);
+    h.set('A.md', note(['travel(2) [m]\nspeed']));
+    const view = h.view('A.md', 'travel(2) [m]\nspeed', 0); await view.ready;
+    assert.equal(view.el.output(), '40\\,\\text{m}|20');
 });

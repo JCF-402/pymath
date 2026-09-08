@@ -14,15 +14,20 @@ import type { ParsedLine, BlockLine } from "./types";
 
 
 export function parseLine(source: string): ParsedLine {
-    const text = stripComment(source).trim();
+    const cleaned = stripComment(source).trim();
+    // Require a separating space and a letter-led label to avoid treating
+    // ordinary indexing, such as values[0], as a display unit.
+    const label = /\s+\[([\p{L}°µΩ][^[\]\r\n]*)\]$/u.exec(cleaned);
+    const text = label ? cleaned.slice(0, label.index).trim() : cleaned;
+    const unit = label ? { unit: label[1]!.trim() } : {};
     if (/^@global(?:\s|$)/u.test(text)) {
         const definition = parseLocalLine(text.slice(7));
         if (definition.type === "expression") {
             throw new Error("@global needs a variable or function definition.");
         }
-        return { ...definition, scope: "global" };
+        return { ...definition, ...unit, scope: "global" };
     }
-    return parseLocalLine(text);
+    return { ...parseLocalLine(text), ...unit };
 }
 
 function parseLocalLine(source: string): ParsedLine {

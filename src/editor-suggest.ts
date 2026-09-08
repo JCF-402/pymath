@@ -38,6 +38,7 @@ export class PyMathSuggest extends EditorSuggest<MathSuggestion> {
         el.createDiv({ text: item.parameters ? `${item.name}(${item.parameters.join(", ")})` : item.name });
         el.createDiv({ cls: "pymath-suggestion-detail",
             text: item.scope === "global" ? `Global · ${item.notePath ?? ""}`
+                : item.scope === "builtin" ? `Built-in · ${item.description ?? ""}`
                 : item.scope === "parameter" ? "Function parameter" : "Local · this note" });
     }
 

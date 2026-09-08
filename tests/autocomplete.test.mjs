@@ -30,14 +30,14 @@ test('queries accept Unicode names and avoid definitions, strings, comments, num
 test('locals come from earlier blocks in the live buffer and override globals; later locals stay hidden', () => {
     const text = note('scale = 4\nspeed(t) = t*2') + '\n' + note('sc\nsecret = 8');
     const results = mathSuggestions(text, 'Use.md', 5, 's', [global('scale'), global('shared')]);
-    assert.deepEqual(results.map(item => [item.name, item.scope]), [['scale', 'local'], ['speed', 'local'], ['shared', 'global']]);
+    assert.deepEqual(results.filter(item => item.scope !== 'builtin').map(item => [item.name, item.scope]), [['scale', 'local'], ['speed', 'local'], ['shared', 'global']]);
     assert.deepEqual(results[1].parameters, ['t']);
 });
 
 test('current-note globals replace stale index entries, include forward declarations and omit conflicts', () => {
     const text = note('ne\n@global newer = 2');
     const results = mathSuggestions(text, 'Use.md', 1, '', [global('old', 'Use.md'), global('external')]);
-    assert.deepEqual(results.map(item => item.name), ['external', 'newer']);
+    assert.deepEqual(results.filter(item => item.scope !== 'builtin').map(item => item.name), ['external', 'newer']);
     assert.deepEqual(mathSuggestions(note('du'), 'Use.md', 1, 'du', [global('duplicate'), global('duplicate', 'Other.md')]), []);
 });
 
@@ -106,4 +106,32 @@ test('suggestion provider uses indexed globals and renders signatures and proven
     const rows = [];
     s.renderSuggestion({ name: 'energy', parameters: ['m'], scope: 'global', notePath: 'Physics.md' }, { createDiv: row => rows.push(row) });
     assert.equal(rows[0].text, 'energy(m)'); assert.equal(rows[1].text, 'Global · Physics.md');
+});
+
+test('built-ins have signatures and descriptions and user definitions override them', () => {
+    const suggestions = mathSuggestions(note('sq'), 'A.md', 1, 'sq', []);
+    assert.equal(suggestions[0].name, 'sqrt');
+    assert.deepEqual(suggestions[0].parameters, ['x']);
+    assert.ok(suggestions[0].description);
+    const local = mathSuggestions(note('sin = 5\nsi'), 'A.md', 2, 'si', []);
+    assert.equal(local[0].name, 'sin'); assert.equal(local[0].scope, 'local');
+    assert.equal(local.filter(item => item.name === 'sin').length, 1);
+    assert.equal(local[0].parameters, undefined);
+    const globals = mathSuggestions(note('pi'), 'A.md', 1, 'pi', [global('pi')]);
+    assert.equal(globals[0].scope, 'global');
+    const duplicate = mathSuggestions(note('pi'), 'A.md', 1, 'pi', [global('pi'), global('pi', 'Other.md')]);
+    assert.deepEqual(duplicate, []);
+});
+
+test('built-in selection inserts calls but constants remain bare names', () => {
+    for (const [query, result, cursor] of [['sq', 'sqrt()', 5], ['pi', 'pi', 2]]) {
+        const e = editor(note(query), 1, query.length), s = suggest();
+        s.context = { ...s.onTrigger(e.cursor, e, { path: 'A.md' }), editor: e };
+        const item = mathSuggestions(e.text, 'A.md', 1, query, [])[0];
+        s.selectSuggestion(item);
+        assert.equal(e.getLine(1), result); assert.equal(e.cursor.ch, cursor);
+    }
+    const rows = [];
+    suggest().renderSuggestion(mathSuggestions(note('sq'), 'A.md', 1, 'sq', [])[0], { createDiv: row => rows.push(row) });
+    assert.equal(rows[1].text, 'Built-in · Principal square root');
 });

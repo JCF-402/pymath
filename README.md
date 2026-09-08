@@ -51,7 +51,7 @@ Comments remain in the editor but are omitted from rendered results and evaluati
 
 Inside a root-level `pymath` block, start typing a variable or function name to see matching suggestions. Suggestions include earlier local definitions from the current editor buffer, global definitions from other notes, and parameters within a function body. Matching is case-sensitive and supports Unicode names such as `φ1` and `π_1`.
 
-Function suggestions show their parameter names; globals show the source note. Selecting a function inserts `name()` and places the cursor inside the parentheses, while existing call arguments are preserved. Local names take precedence over globals. Built-in SymPy functions are not included in this first autocomplete version.
+Function suggestions show their parameter names; globals show the source note. Selecting a function inserts `name()` and places the cursor inside the parentheses, while existing call arguments are preserved. Local names take precedence over globals. A curated set of built-in SymPy functions and constants is also suggested, with signatures and short descriptions: trigonometry, roots, logarithms, algebra, differentiation, integration, `pi`, `E`, `I`, and `oo`. Function parameters and local/global definitions take precedence over built-ins. Trigonometric angles use radians; matching remains case-sensitive.
 
 ## Development
 
@@ -67,3 +67,13 @@ For local installation, place `main.js`, `manifest.json`, `styles.css`, and **`s
 Calculations and vault indexing run locally. PyMath requires desktop Obsidian and Python with SymPy installed. Its existing expression parser is not a sandbox for untrusted code.
 
 Python evaluation errors include the original block line number. Common bracket and function-argument mistakes receive a clearer explanation with the original technical details retained. Moving an error by adding comments refreshes its location.
+
+Fully numeric, finite results such as `sin(5000)`, `sqrt(2)`, and fractions display decimal approximations using the configured precision (12 significant digits by default). Integers remain integers and expressions with unknown symbols remain symbolic. Substitution steps retain their exact expressions, and stored variables/functions retain exact values for subsequent calculations. Trigonometric inputs remain in radians.
+
+In PyMath settings, **Precision** accepts 2–30 significant digits. **Number format** offers Automatic, Decimal, and Scientific. Changing either setting refreshes tracked blocks immediately while retaining exact internal values. Integers stay exact; explicit decimal/scientific formatting applies to finite real results. Symbolic, complex and infinite values retain SymPy formatting.
+
+**Decimal places** sets 0–20 digits after the decimal point, including trailing zeros. Leave it blank to use significant-digit precision. It overrides precision for finite real output; scientific notation applies it to the mantissa. Changes refresh existing blocks and do not round stored values.
+
+## Unit labels
+
+Append a label separated by a space, such as `speed = distance/time [m/s]`. Labels appear in upright text after the final result and can precede a trailing comment. They also work on expressions and global/function definitions. These are literal display labels: units are not calculated, converted, or inherited by later expressions. Labels begin with a letter or a unit symbol such as `°`; ordinary indexing such as `values[0]` is preserved.

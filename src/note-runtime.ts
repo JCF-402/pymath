@@ -14,6 +14,7 @@ import { RebuildCoordinator } from "./rebuild-coordinator";
 import { BlockOutput } from "./block-output";
 
 interface RuntimeState {
+    getDisplay?: () => { precision: number; numberFormat: string; decimalPlaces?: number | null };
     getGlobals?: () => GlobalDefinition[];
     getBlocks: () => Record<string, Blocks>;
     setBlocks: (blocks: Record<string, Blocks>) => void;
@@ -21,6 +22,7 @@ interface RuntimeState {
 }
 
 interface NoteSnapshot {
+    display: string;
     globals: GlobalDefinition[] | undefined;
     text: string;
     metadata: CachedMetadata;
@@ -97,6 +99,7 @@ export class NoteRuntime {
             globalSignature(sources, previous.globals ?? [], locations) === globalSignature(sources, globals ?? [], locations));
         const calculationsUnchanged = previous !== undefined &&
             previous.showSubstitutionSteps === showSteps &&
+            previous.display === JSON.stringify(this.state.getDisplay?.()) &&
             globalsUnchanged &&
             previous.blocks.length === scanned.length &&
             previous.blocks.every((block, index) => blockSignature(block.source) === blockSignature(scanned[index]!.source) &&
@@ -133,12 +136,13 @@ export class NoteRuntime {
         const snapshot: NoteSnapshot = {
             text, metadata: cache, blocks: update.identifiedBlocks,
             globals: this.state.getGlobals?.(),
+            display: JSON.stringify(this.state.getDisplay?.()),
             errors: update.errors, showSubstitutionSteps: showSteps, status: "pending",
         };
         this.notes.set(notePath, snapshot);
 
         // Build a complete replacement batch before resetting Python state.
-        const requests = createNoteRebuild(notePath, update.blocks, showSteps, snapshot.globals);
+        const requests = createNoteRebuild(notePath, update.blocks, showSteps, snapshot.globals, this.state.getDisplay?.());
         snapshot.work = this.coordinator.rebuild(notePath, requests)
             .then(async completed => {
                 if (!completed || this.closed || this.notes.get(notePath) !== snapshot) return;
@@ -159,7 +163,7 @@ export class NoteRuntime {
         const snapshot = this.notes.get(notePath);
         if (snapshot) {
             // A new render also picks up a changed display setting.
-            if (snapshot.showSubstitutionSteps !== this.state.showSubstitutionSteps() ||
+            if (snapshot.display !== JSON.stringify(this.state.getDisplay?.()) || snapshot.showSubstitutionSteps !== this.state.showSubstitutionSteps() ||
                 snapshot.globals !== this.state.getGlobals?.()) {
                 await this.updateNote(notePath, snapshot.text, snapshot.metadata);
             } else {

@@ -63,6 +63,7 @@ export default class PyMath extends Plugin {
 		this.globalIndex = globals;
 		this.register(() => globals.close());
 		const runtime: NoteRuntime = new NoteRuntime(this.app, transport, {
+			getDisplay: () => ({ decimalPlaces: this.savedData.settings.decimalPlaces, precision: this.savedData.settings.precision, numberFormat: this.savedData.settings.numberFormat }),
 			getGlobals: () => globals.getDefinitions(),
 			getBlocks: () => this.savedData.blocks,
 			setBlocks: blocks => {

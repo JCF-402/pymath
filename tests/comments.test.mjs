@@ -40,5 +40,12 @@ test('autocomplete ignores comments including assignment signs in trailing prose
     assert.equal(completionQuery('sc # explanation', 10), null);
     assert.equal(completionQuery('# sc', 4), null);
     const text = note('# secret = 1\nscale = 2 # factor\nsc');
-    assert.deepEqual(mathSuggestions(text, 'A.md', 3, 's', []).map(item => item.name), ['scale']);
+    assert.deepEqual(mathSuggestions(text, 'A.md', 3, 's', []).filter(item => item.scope !== 'builtin').map(item => item.name), ['scale']);
+});
+
+test('unit labels are stripped after comments and ordinary indexing is preserved', () => {
+    assert.deepEqual(parseBlock('v = 10 [m/s] # speed'), [{ type: 'assignment', variable: 'v', expression: '10', unit: 'm/s' }]);
+    assert.equal(parseBlock('values[0]')[0].expression, 'values[0]');
+    assert.equal(parseBlock('Symbol("[m]")')[0].expression, 'Symbol("[m]")');
+    assert.equal(completionQuery('speed [met', 10), null);
 });

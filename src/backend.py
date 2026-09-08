@@ -2,6 +2,7 @@ import sys
 import json
 import io
 import tokenize
+from decimal import Decimal
 from sympy import  latex, Symbol, Lambda, Function
 from sympy.parsing.sympy_parser import (parse_expr,standard_transformations,implicit_multiplication_application,
                                         convert_xor)
@@ -94,6 +95,46 @@ def _resolve(definitions):
         except ValueError:
             pass
     return values, errors
+
+
+def display_value(value, request):
+    precision = request.get("precision", 12)
+    if type(precision) is not int or not 2 <= precision <= 30:
+        precision = 12
+    # Round only the presentation, never the stored mathematical value.
+    if (getattr(value, "is_number", False) and getattr(value, "is_finite", None) is True
+            and not getattr(value, "is_Integer", False)):
+        approximate = value.evalf(precision)
+        if approximate != value:
+            return approximate, True
+    return value, False
+
+
+def number_latex(value, request):
+    mode = request.get("numberFormat", "automatic")
+    places = request.get("decimalPlaces")
+    if type(places) is int and 0 <= places <= 20 and value.is_real is True and value.is_finite is True:
+        magnitude = Decimal(str(value.evalf(10))).adjusted() if value != 0 else 0
+        digits = max(30, places + max(0, magnitude) + 15)
+        decimal = Decimal(str(value.evalf(digits)))
+        if mode == "scientific" and decimal:
+            mantissa, exponent = format(decimal, f'.{places}E').split('E')
+            return mantissa + r" \times 10^{" + str(int(exponent)) + "}"
+        text = format(decimal, f'.{places}f')
+        return text[1:] if text.startswith('-') and Decimal(text) == 0 else text
+    value, _ = display_value(value, request)
+    if mode not in ("decimal", "scientific") or value.is_real is not True or value.is_finite is not True:
+        return latex(value)
+    decimal = Decimal(str(value))
+    if mode == "decimal":
+        text = format(decimal, 'f')
+        return text.rstrip('0').rstrip('.') if '.' in text else text
+    if not decimal:
+        return "0"
+    mantissa, exponent = format(decimal, 'E').split('E')
+    if '.' in mantissa:
+        mantissa = mantissa.rstrip('0').rstrip('.')
+    return mantissa + r" \times 10^{" + str(int(exponent)) + "}"
 
 
 def explain_error(error, source):
@@ -264,8 +305,10 @@ for line in sys.stdin:
                 transformations=transformations
             )
 
+            displayed, approximated = display_value(expression, request)
+            relation = " = "
             if variable is not None:
-                result_latex = f"{latex(Symbol(variable))} = {latex(expression)}"
+                result_latex = latex(Symbol(variable)) + relation + number_latex(expression, request)
 
                 if request.get("showSubstitutionSteps") is True:
                     # Preserve variable names and function calls for display.
@@ -291,22 +334,28 @@ for line in sys.stdin:
                     )
 
                     steps = []
-                    for value in (original, substituted, expression):
-                        formatted = latex(value, order="none", mul_symbol="dot")
+                    for value in ((original, substituted) if approximated else (original, substituted, expression)):
+                        formatted = number_latex(expression, request) if value is expression else latex(value, order="none", mul_symbol="dot")
                         # Avoid repeated adjacent steps such as x = 5 = 5.
                         if not steps or steps[-1] != formatted:
                             steps.append(formatted)
 
-                    result_latex = (
-                        f"{latex(Symbol(variable))} = " + " = ".join(steps)
-                    )
+                    result_latex = f"{latex(Symbol(variable))} = " + " = ".join(steps)
+                    if approximated:
+                        result_latex += " = " + number_latex(expression, request)
 
                 # Format using the previous values before storing the new one.
                 if not is_global:
                     note_values[variable] = expression
             else: 
-                result_latex = latex(expression)
+                result_latex = number_latex(expression, request)
             
+        unit = request.get("unit")
+        if isinstance(unit, str) and unit:
+            escapes = {"\\": r"\textbackslash{}", "{": r"\{", "}": r"\}",
+                       "$": r"\$", "&": r"\&", "%": r"\%", "#": r"\#",
+                       "_": r"\_", "^": r"\textasciicircum{}", "~": r"\textasciitilde{}"}
+            result_latex += r"\,\text{" + "".join(escapes.get(char, char) for char in unit) + "}"
         if target and not is_global:
             local_errors.pop(target, None)
         response = {

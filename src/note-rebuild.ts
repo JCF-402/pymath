@@ -24,6 +24,7 @@ export function createNoteRebuild(
     blocks: Record<string, Blocks>,
     showSubstitutionSteps: boolean,
     globals?: GlobalDefinition[],
+    display?: { precision: number; numberFormat: string; decimalPlaces?: number | null },
 ): RebuildRequest[] {
     const requests: RebuildRequest[] = [
         {
@@ -43,6 +44,7 @@ export function createNoteRebuild(
         for (const [lineIndex, parsed] of block.lines.entries()) {
             requests.push({
                 ...parsed,
+                ...display,
                 requestId: crypto.randomUUID(),
                 notePath,
                 blockId: block.id,

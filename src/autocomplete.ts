@@ -1,3 +1,4 @@
+import { builtinSuggestions } from "./builtin-suggestions";
 import { stripComment } from "./comments";
 import { parseLine } from "./parser";
 import { pymathLines } from "./pymath-lines";
@@ -7,7 +8,8 @@ import type { GlobalDefinition } from "./types";
 export interface MathSuggestion {
     name: string;
     parameters?: string[];
-    scope: "local" | "global" | "parameter";
+    scope: "local" | "global" | "parameter" | "builtin";
+    description?: string;
     notePath?: string;
 }
 
@@ -17,6 +19,8 @@ const signature = new RegExp(`^\\s*(?:@global\\s+)?(${name})\\s*\\(([^()]*)\\)\\
 export function completionQuery(line: string, ch: number): string | null {
     const code = stripComment(line);
     if (ch > code.length) return null;
+    const unitStart = /\s+\[[\p{L}°µΩ][^[\]]*\]?$/u.exec(code);
+    if (unitStart && ch > unitStart.index + 1) return null;
     const prefix = code.slice(0, ch);
     // Do not offer mathematical names inside strings, comments or directives.
     if (/[#'"@]/.test(prefix.replace(/^\s*@global\s+/, ""))) return null;
@@ -34,7 +38,7 @@ export function mathSuggestions(
     const lines = pymathLines(text);
     const current = lines.find(line => line.line === cursorLine);
     if (!current) return [];
-    const candidates = new Map<string, MathSuggestion>();
+    const candidates = new Map<string, MathSuggestion>(builtinSuggestions.map(item => [item.name, item]));
     // The current editor buffer replaces its saved global definitions.
     const globals = [...indexed.filter(item => item.notePath !== notePath), ...extractGlobals(notePath, text)];
     const counts = new Map<string, number>();
@@ -67,7 +71,7 @@ export function mathSuggestions(
             }
         }
     }
-    const priority = { parameter: 0, local: 1, global: 2 };
+    const priority = { parameter: 0, local: 1, global: 2, builtin: 3 };
     return [...candidates.values()].filter(item => item.name.startsWith(query))
         .sort((a, b) => priority[a.scope] - priority[b.scope] || a.name.localeCompare(b.name))
         .slice(0, 30);

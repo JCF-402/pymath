@@ -29,6 +29,10 @@ export class Setting {
         };
         this.input = input; callback(input); return this;
     }
+    addDropdown(callback) {
+        const input = { addOptions() { return this; }, setValue() { return this; }, onChange(callback) { this.change = callback; return this; } };
+        this.input = input; callback(input); return this;
+    }
     addToggle(callback) { return this.addText(callback); }
 }
 export class MarkdownView {} export class Modal {} export class TFile {}
@@ -130,4 +134,37 @@ test('unload during restart cannot spawn a subsequent Python process', async t =
     await assert.rejects(plugin.restartPython(), /unloading/);
     assert.equal(spawns.length, count); assert.equal(child.kills, 1);
     assert.equal(plugin.pythonProcess, null);
+});
+
+test('precision and number-format controls validate, save and refresh active results', async t => {
+    const plugin = await load(t, { settings: {} });
+    assert.equal(plugin.savedData.settings.precision, 12);
+    assert.equal(plugin.savedData.settings.numberFormat, 'automatic');
+    let refreshes = 0;
+    plugin.noteRuntime.refreshGlobals = async () => { refreshes++; };
+    plugin.tabs[0].display();
+    const precision = controls.findLast(item => item.name === 'Precision');
+    for (const invalid of ['', '0', '31', '3.5', 'abc']) await precision.input.change(invalid);
+    assert.equal(refreshes, 0);
+    await precision.input.change('6');
+    assert.equal(plugin.writes.at(-1).settings.precision, 6);
+    const format = controls.findLast(item => item.name === 'Number format');
+    await format.input.change('scientific');
+    assert.equal(plugin.writes.at(-1).settings.numberFormat, 'scientific');
+    assert.equal(refreshes, 2);
+});
+
+test('decimal places accepts zero and blank reset, rejects invalid input and refreshes', async t => {
+    const plugin = await load(t, { settings: {} });
+    assert.equal(plugin.savedData.settings.decimalPlaces, null);
+    let refreshes = 0; plugin.noteRuntime.refreshGlobals = async () => { refreshes++; };
+    plugin.tabs[0].display();
+    const control = controls.findLast(item => item.name === 'Decimal places');
+    for (const value of ['-1', '21', '2.5', 'abc']) await control.input.change(value);
+    assert.equal(refreshes, 0);
+    for (const [value, expected] of [['2', 2], ['0', 0], ['', null]]) {
+        await control.input.change(value);
+        assert.equal(plugin.writes.at(-1).settings.decimalPlaces, expected);
+    }
+    assert.equal(refreshes, 3);
 });

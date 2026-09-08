@@ -37,16 +37,19 @@ export type Functions = {
 export type ParsedLine = 
     | {
         type: "assignment";
+        unit?: string;
         scope?: "global";
         variable: string;
         expression: string;
     }
     | {
         type: "expression";
+        unit?: string;
         expression: string;
     }
     | {
         type: "function";
+        unit?: string;
         scope?: "global";
         name: string;
         parameters: string[];

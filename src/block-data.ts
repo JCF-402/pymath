@@ -13,6 +13,8 @@ function isParsedLine(value: unknown): value is BlockLine {
 
     if (value.scope !== undefined && value.scope !== "global") return false;
 
+    if (value.unit !== undefined && typeof value.unit !== "string") return false;
+
     switch (value.type) {
         case "invalid":
             return typeof value.error === "string" &&
