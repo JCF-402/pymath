@@ -22,10 +22,10 @@ test('CSV supports BOM, CRLF, quoted commas, escaped quotes and multiline fields
 });
 test('dataset templates produce isotope suggestions preserving all digits', () => {
     const rows = datasetSuggestions(csv, config);
-    assert.equal(rows[1].name, 'He_4_2'); assert.equal(rows[1].insertText, '4.0026032497');
+    assert.equal(rows[1].name, 'He_4_2'); assert.equal(rows[1].insertText, 'label(4.0026032497, "u")');
     assert.match(rows[1].description, /4\.0026032497 u.*He-4, Z=2, N=2.*Data\/isotopes.csv/);
     const precise = datasetSuggestions(csv.replace('4.0026032497', '4.002603249700000000001'), config);
-    assert.equal(precise[1].insertText, '4.002603249700000000001');
+    assert.equal(precise[1].insertText, 'label(4.002603249700000000001, "u")');
 });
 test('bad headers, mismatched rows and nonnumeric values are rejected', () => {
     assert.throws(() => datasetSuggestions('N,N\n1,2', config), /unique/);

@@ -1,6 +1,9 @@
+import { LatexSuggest } from "./latex-suggest";
+import { prepareGlobalLatex } from "./latex-render";
+import { insertPyMathBlock } from "./insert-block";
 import { Dataset } from "./dataset";
-import {MarkdownView,Modal,Plugin,FileSystemAdapter,Notice} from 'obsidian';
-import {DEFAULT_SETTINGS,SampleSettingTab,} from './settings';
+import {Plugin,FileSystemAdapter,Notice} from 'obsidian';
+import {DEFAULT_SETTINGS,PyMathSettingTab,} from './settings';
 
 import {PyMathData} from "./types"
 import { createPythonResponseReceiver } from './python-response';
@@ -34,18 +37,13 @@ export default class PyMath extends Plugin {
 	async onload() {
 		const data = await this.loadData() as Partial<PyMathData> | null;
 
-		// savedData keeps track of information in between using Obsidian or turning the plugin on/off
-		// Ideally it is updated everytime that a setting changes or
-		// Everytime that a blocks information is changed. 
-		// It is the source of truth
-		// The first time this plugin loads it will be empty/null
 		this.savedData = {
 			settings: {
 				...DEFAULT_SETTINGS,
 				...data?.settings,
-				// Preserve this development checkout's existing Python environment.
+				// Keep configured paths; new installs use the portable default.
 				pythonPath: data?.settings?.pythonPath ??
-					'/Users/jomarcardona/miniforge/envs/python-general/bin/python',
+					DEFAULT_SETTINGS.pythonPath,
 			},
 			blocks: validateSavedBlocks(data?.blocks),
 			variables: data?.variables ?? {},
@@ -65,7 +63,7 @@ export default class PyMath extends Plugin {
 		this.globalIndex = globals;
 		this.register(() => globals.close());
 		const runtime: NoteRuntime = new NoteRuntime(this.app, transport, {
-			getDisplay: () => ({ decimalPlaces: this.savedData.settings.decimalPlaces, precision: this.savedData.settings.precision, numberFormat: this.savedData.settings.numberFormat }),
+			getDisplay: () => ({ showUnitsInSteps: this.savedData.settings.showUnitsInSteps, decimalPlaces: this.savedData.settings.decimalPlaces, precision: this.savedData.settings.precision, numberFormat: this.savedData.settings.numberFormat }),
 			getGlobals: () => globals.getDefinitions(),
 			getBlocks: () => this.savedData.blocks,
 			setBlocks: blocks => {
@@ -80,6 +78,8 @@ export default class PyMath extends Plugin {
         this.register(() => this.dataset?.close());
         void this.dataset.reload();
         this.addCommand({ id: 'reload-datasets', name: 'Reload datasets', callback: () => { void this.dataset?.reload(); } });
+        this.registerMarkdownPostProcessor(prepareGlobalLatex, -100);
+        this.registerEditorSuggest(new LatexSuggest(this.app, globals));
         this.registerEditorSuggest(new PyMathSuggest(this.app, globals, this.dataset));
 		this.register(() => runtime.close());
 
@@ -121,6 +121,12 @@ export default class PyMath extends Plugin {
 		);
 
 		this.addCommand({
+			id: 'insert-pymath-block',
+			name: 'Insert PyMath block',
+			editorCallback: insertPyMathBlock,
+		});
+
+		this.addCommand({
 			id: 'restart-python',
 			name: 'Restart Python',
 			callback: () => {
@@ -132,32 +138,7 @@ export default class PyMath extends Plugin {
 			},
 		});
 
-		// Use this later to / add PyMath block to editor.
-		// This adds a complex command that can check whether the current state of the app allows execution of the command
-		this.addCommand({
-			id: 'open-modal-complex',
-			name: 'Open modal (complex)',
-			checkCallback: (checking: boolean) => {
-				// Conditions to check
-				const markdownView =
-					this.app.workspace.getActiveViewOfType(MarkdownView);
-				if (markdownView) {
-					// If checking is true, we're simply "checking" if the command can be run.
-					// If checking is false, then we want to actually perform the operation.
-					if (!checking) {
-						new SampleModal(this.app).open();
-					}
-
-					// This command will only show up in Command Palette when the check function returns true
-					return true;
-				}
-				return false;
-			},
-		});
-
-		// Use this later for PyMath settings
-		// This adds a settings tab so the user can configure various aspects of the plugin
-		this.addSettingTab(new SampleSettingTab(this.app, this));
+		this.addSettingTab(new PyMathSettingTab(this.app, this));
 
 	}
 
@@ -289,16 +270,4 @@ export default class PyMath extends Plugin {
 		await this.stateSaver?.saveNow();
 	}
 
-}
-
-class SampleModal extends Modal {
-	onOpen() {
-		const { contentEl } = this;
-		contentEl.setText('Woah!');
-	}
-
-	onClose() {
-		const { contentEl } = this;
-		contentEl.empty();
-	}
 }

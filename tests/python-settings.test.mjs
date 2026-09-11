@@ -5,6 +5,7 @@ import { build } from 'esbuild';
 const obsidian = `
 export const controls = [];
 export class EditorSuggest {}
+export class Menu {}
 export class Notice { constructor(message) { this.message = message; } }
 export class Plugin {
     manifest = { id: 'pymath' }; callbacks = []; writes = []; tabs = []; commands = [];
@@ -12,6 +13,7 @@ export class Plugin {
     async saveData(data) { this.writes.push(structuredClone(data)); }
     register(callback) { this.callbacks.push(callback); }
     registerEvent() {} registerMarkdownCodeBlockProcessor() {} registerEditorSuggest() {}
+    registerMarkdownPostProcessor() {}
     addCommand(command) { this.commands.push(command); }
     addSettingTab(tab) { this.tabs.push(tab); }
 }
@@ -85,9 +87,9 @@ async function load(t, data) {
     return plugin;
 }
 
-test('older settings retain the existing SymPy executable', async t => {
+test('settings without a Python path use the portable default', async t => {
     const plugin = await load(t, {settings:{showSubstitutionSteps:true}});
-    const expected = '/Users/jomarcardona/miniforge/envs/python-general/bin/python';
+    const expected = 'python3';
     assert.equal(plugin.savedData.settings.pythonPath, expected);
     assert.equal(spawns.at(-1).executable, expected);
     assert.equal(plugin.savedData.settings.showSubstitutionSteps, true);

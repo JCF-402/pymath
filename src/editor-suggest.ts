@@ -1,3 +1,5 @@
+import { latexNameSuffix } from "./math-names";
+import { matrixSuggestions } from "./matrix-suggestions";
 import type { Dataset } from "./dataset";
 import {
     EditorSuggest, renderMath, loadMathJax, type App, type Editor, type EditorPosition,
@@ -30,6 +32,9 @@ export class PyMathSuggest extends EditorSuggest<MathSuggestion> {
     }
 
     async getSuggestions(context: EditorSuggestContext): Promise<MathSuggestion[]> {
+        if (context.editor.getLine(context.start.line).slice(0, context.start.ch).endsWith(".")) {
+            return matrixSuggestions.filter(item => item.name.startsWith(context.query));
+        }
         await this.globals.ready;
         await this.dataset?.ready;
         const math = mathSuggestions(context.editor.getValue(), context.file.path,
@@ -51,12 +56,13 @@ export class PyMathSuggest extends EditorSuggest<MathSuggestion> {
         } else {
             el.createDiv({ text: item.parameters ? `${item.name}(${item.parameters.join(", ")})` : item.name });
         }
+        if (item.unit) el.createDiv({ cls: "pymath-suggestion-detail", text: item.unit });
         if (item.tag) el.createDiv({ cls: "pymath-suggestion-detail", text: item.tag });
         el.createDiv({ cls: "pymath-suggestion-detail",
             text: item.scope === "dataset" ? item.description ?? "Dataset"
                 : item.scope === "global" ? `Global · ${item.notePath ?? ""}`
                 : item.scope === "builtin" ? `Built-in · ${item.description ?? ""}`
-                : item.scope === "parameter" ? "Function parameter" : "Local · this note" });
+                : item.scope === "parameter" ? "Function parameter" : `Local · ${item.description ?? "this note"}` });
     }
 
     selectSuggestion(item: MathSuggestion): void {
@@ -66,7 +72,11 @@ export class PyMathSuggest extends EditorSuggest<MathSuggestion> {
         const cursor = editor.getCursor();
         if (cursor.line !== end.line || cursor.ch !== end.ch || editor.getRange(start, end) !== query) return;
         // Replace the suffix too when completing in the middle of an identifier.
-        const suffix = /^[\p{L}\p{M}\p{N}_]*/u.exec(editor.getLine(end.line).slice(end.ch))![0];
+        const suffixPattern = query.includes("_{")
+            ? /^[\p{L}\p{M}\p{N}_, +-]*\}?/u
+            : /^[\p{L}\p{M}\p{N}_]*(?:\{[\p{L}\p{M}\p{N}_, +-]*\})?/u;
+        const tail = editor.getLine(end.line).slice(end.ch);
+        const suffix = latexNameSuffix(query, tail) ?? suffixPattern.exec(tail)![0];
         const replaceEnd = { line: end.line, ch: end.ch + suffix.length };
         const hasCall = /^\s*\(/.test(editor.getLine(end.line).slice(replaceEnd.ch));
         const addCall = item.parameters !== undefined && !hasCall;

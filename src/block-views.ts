@@ -1,3 +1,4 @@
+import { registerPlotMenu } from "./plot-menu";
 import {
     MarkdownRenderChild,
     type MarkdownPostProcessorContext,
@@ -26,6 +27,7 @@ export class BlockViews {
 
         // Remove the reference when Obsidian replaces or closes this view.
         const child = new MarkdownRenderChild(el);
+        registerPlotMenu(el, child);
 
         child.register(() => {
             this.views.delete(view);
@@ -44,15 +46,22 @@ export class BlockViews {
 
             // Read the current position: edits above can move the block.
             const section = view.ctx.getSectionInfo(view.el);
-            if (!section) continue;
+            const matches = blocks.filter(candidate => candidate.source.trim() === view.source.trim());
+            // Export renderers may not expose section positions. Keep identical
+            // sources distinct by their occurrence within this render document.
+            const peers = [...this.views].filter(candidate =>
+                candidate.notePath === notePath && candidate.ctx.docId === view.ctx.docId &&
+                candidate.source.trim() === view.source.trim());
+            const block = section
+                ? matches.find(candidate => candidate.startLine === section.lineStart)
+                : matches.length === 1 ? matches[0]
+                : view.ctx.docId ? matches[peers.indexOf(view)] : undefined;
 
-            const block = blocks.find(candidate =>
-                candidate.startLine === section.lineStart &&
-                candidate.source.trim() === view.source.trim(),
-            );
-
-            // Require position and source to agree before updating a view.
-            if (!block) continue;
+            // When a position exists, never replace it with a source-only guess.
+            if (!block) {
+                if (!section) view.el.setText("PyMath: Could not locate this block in the source note.");
+                continue;
+            }
 
             render(block.id, view.el);
         }

@@ -1,6 +1,6 @@
 import type { PlotOptions } from "./plot-options";
 
-import { MyPluginSettings } from "./settings";
+import { PyMathSettings } from "./settings";
 
 export type LineResult =
     | { result: string; tag?: string; image?: string }
@@ -40,6 +40,7 @@ export type Functions = {
 export type ParsedLine = 
     | {
         type: "assignment";
+        assumptions?: string[];
         unit?: string;
         tag?: string;
         scope?: "global";
@@ -63,7 +64,7 @@ export type ParsedLine =
     }
 
 export interface PyMathData {
-    settings: MyPluginSettings;
+    settings: PyMathSettings;
     blocks: Record<string, Blocks>;
     variables: Record<string, Variables>;
     functions: Record<string,Functions>;
@@ -75,6 +76,7 @@ export type GlobalDefinition = {
 } & (Exclude<ParsedLine, { type: "expression" }> | { error: string; name?: string });
 
 export interface PlotLine {
+    mode?: "parametric" | "polar";
     options?: PlotOptions;
     curves?: { expression: string; tag?: string; unit?: string; sourceLine: number; color?: string; style?: string; width?: number }[];
     type: "plot";

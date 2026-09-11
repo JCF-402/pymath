@@ -1,3 +1,4 @@
+import { symbolAssumptions } from "./symbol-declaration";
 import { legendPositions, lineStyles } from "./plot-options";
 import type { Blocks, BlockLine } from "./types";
 
@@ -11,6 +12,10 @@ function validOptions(value: unknown): boolean {
     if (value === undefined) return true;
     if (!isRecord(value)) return false;
     return ["title", "xlabel", "ylabel"].every(key => value[key] === undefined || typeof value[key] === "string") &&
+        ["xrangeScale", "yrangeScale"].every(key => value[key] === undefined || value[key] === "linear" || value[key] === "log") &&
+        (value.aspect === undefined || value.aspect === "auto" || value.aspect === "equal") &&
+        (value.yrange === undefined || (Array.isArray(value.yrange) && value.yrange.length === 2 &&
+            value.yrange.every(n => typeof n === "number" && Number.isFinite(n)) && value.yrange[0] < value.yrange[1])) &&
         (value.grid === undefined || typeof value.grid === "boolean") &&
         (value.legend === undefined || (typeof value.legend === "string" && legendPositions.includes(value.legend))) &&
         (value.size === undefined || (Array.isArray(value.size) && value.size.length === 2 &&
@@ -30,9 +35,12 @@ function isParsedLine(value: unknown): value is BlockLine {
 
     if (value.tag !== undefined && typeof value.tag !== "string") return false;
 
+    if (value.assumptions !== undefined && (value.type !== "assignment" ||
+        !Array.isArray(value.assumptions) || !value.assumptions.every(a => typeof a === "string" && symbolAssumptions.includes(a)))) return false;
+
     switch (value.type) {
         case "plot":
-            return validOptions(value.options) && (value.curves === undefined || (Array.isArray(value.curves) && value.curves.length > 0 && value.curves.length <= 10 &&
+            return (value.mode === undefined || value.mode === "parametric" || value.mode === "polar") && validOptions(value.options) && (value.curves === undefined || (Array.isArray(value.curves) && value.curves.length > 0 && value.curves.length <= 10 &&
                 value.curves.every(curve => isRecord(curve) && typeof curve.expression === "string" &&
                     typeof curve.sourceLine === "number" && Number.isInteger(curve.sourceLine) && curve.sourceLine > 0 &&
                     (curve.color === undefined || typeof curve.color === "string") &&

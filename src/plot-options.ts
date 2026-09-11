@@ -1,6 +1,12 @@
 import type { PlotLine } from "./types";
 
 export interface PlotOptions {
+    xticks?: "auto" | "pi";
+    yticks?: "auto" | "pi";
+    xrangeScale?: "linear" | "log";
+    yrangeScale?: "linear" | "log";
+    aspect?: "auto" | "equal";
+    yrange?: [number, number];
     title?: string;
     xlabel?: string;
     ylabel?: string;
@@ -11,7 +17,7 @@ export interface PlotOptions {
 export const legendPositions = ['auto', 'off', 'top-right', 'top-left', 'bottom-right', 'bottom-left', 'center'];
 export const lineStyles = ['solid', 'dashed', 'dotted', 'dashdot'];
 export function isPlotDirective(text: string): boolean {
-    return /^\s*@(plot|range|title|xlabel|ylabel|grid|legend|size|color|style|width)(?:\s|$)/u.test(text);
+    return /^\s*@(plot|parametric|polar|range|yrange|xscale|yscale|xticks|yticks|aspect|title|xlabel|ylabel|grid|legend|size|color|style|width)(?:\s|$)/u.test(text);
 }
 
 export function applyPlotOptions(plot: PlotLine, directives: { text: string; line: number }[]): void {
@@ -47,7 +53,24 @@ export function applyPlotOptions(plot: PlotLine, directives: { text: string; lin
             if (seen.has(key)) throw new Error(`Use @${key} only once per block.`);
             seen.add(key);
             if (key === 'title' || key === 'xlabel' || key === 'ylabel') options[key] = value;
-            else if (key === 'grid') {
+            else if (key === 'xticks' || key === 'yticks') {
+                if (value !== 'auto' && value !== 'pi') throw new Error('Tick format must be auto or pi.');
+                options[key] = value;
+            }
+            else if (key === 'xscale' || key === 'yscale') {
+                if (value !== 'linear' && value !== 'log') throw new Error('Axis scale must be linear or log.');
+                options[key === 'xscale' ? 'xrangeScale' : 'yrangeScale'] = value;
+            } else if (key === 'aspect') {
+                if (value !== 'auto' && value !== 'equal') throw new Error('Aspect must be auto or equal.');
+                options.aspect = value;
+            } else if (key === 'yrange') {
+                const parts = value.split(',');
+                const values = parts.map(part => Number(part.trim()));
+                if (parts.length !== 2 || parts.some(part => !part.trim()) || !values.every(Number.isFinite) || values[0]! >= values[1]!) {
+                    throw new Error('Use @yrange minimum, maximum with finite numbers and minimum below maximum.');
+                }
+                options.yrange = [values[0]!, values[1]!];
+            } else if (key === 'grid') {
                 if (value !== 'on' && value !== 'off') throw new Error('Use @grid on or @grid off.');
                 options.grid = value === 'on';
             } else if (key === 'legend') {

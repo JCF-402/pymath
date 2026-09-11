@@ -16,7 +16,7 @@ import { RebuildCoordinator } from "./rebuild-coordinator";
 import { BlockOutput } from "./block-output";
 
 interface RuntimeState {
-    getDisplay?: () => { precision: number; numberFormat: string; decimalPlaces?: number | null };
+    getDisplay?: () => { precision: number; numberFormat: string; decimalPlaces?: number | null; showUnitsInSteps?: boolean };
     getGlobals?: () => GlobalDefinition[];
     getBlocks: () => Record<string, Blocks>;
     setBlocks: (blocks: Record<string, Blocks>) => void;

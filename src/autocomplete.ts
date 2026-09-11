@@ -1,3 +1,4 @@
+import { mathName, splitParameters, latexNameCompletion } from "./math-names";
 import { builtinSuggestions } from "./builtin-suggestions";
 import { stripComment } from "./comments";
 import { parseLine } from "./parser";
@@ -13,9 +14,16 @@ export interface MathSuggestion {
     description?: string;
     notePath?: string;
     tag?: string;
+    unit?: string;
 }
 
-const name = String.raw`[\p{L}_][\p{L}\p{M}\p{N}_]*`;
+function declaredUnit(item: { unit?: string; expression: string }): string | undefined {
+    if (item.unit) return item.unit;
+    // Only explicit outer unit/convert calls; do not guess dimensions from arbitrary formulas.
+    return /^(?:unit|convert|label)\(.*,[ ]*["']([^"']+)["'][ ]*\)$/u.exec(item.expression)?.[1];
+}
+
+const name = mathName;
 const signature = new RegExp(`^\\s*(?:@global\\s+)?(${name})\\s*\\(([^()]*)\\)\\s*=(?!=)`, "u");
 
 export function completionQuery(line: string, ch: number): string | null {
@@ -24,15 +32,17 @@ export function completionQuery(line: string, ch: number): string | null {
     const unitStart = /\s+\[[\p{L}°µΩ][^[\]]*\]?$/u.exec(code);
     if (unitStart && ch > unitStart.index + 1) return null;
     const tagStart = /\s+\{[^}]*\}?$/u.exec(code.slice(0, ch));
-    if (tagStart) return null;
+    if (tagStart && !tagStart[0].includes("\\")) return null;
     const prefix = code.slice(0, ch);
     // Do not offer mathematical names inside strings, comments or directives.
-    if (/[#'"@]/.test(prefix.replace(/^\s*@(global|plot)\s+/, ""))) return null;
-    const match = /[\p{L}\p{M}\p{N}_]+$/u.exec(prefix);
-    if (!match || !new RegExp(`^${name}$`, "u").test(match[0])) return null;
+    const unquoted = prefix.replace(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/gu, "");
+    if (/[#'"@]/.test(unquoted.replace(/^\s*@(global|plot|parametric|polar)\s+/, ""))) return null;
+    const plain = /[\p{L}\p{M}\p{N}_]+$/u.exec(prefix)?.[0];
+    const query = latexNameCompletion(prefix) ?? plain;
+    if (!query || (!query.includes("{") && !new RegExp(`^${name}$`, "u").test(query))) return null;
     const assignment = /^\s*(?:@global\s+)?[^=]+=(?!=)/u.exec(code);
     if (assignment && ch < assignment[0].length) return null;
-    return match[0];
+    return query;
 }
 
 export function mathSuggestions(
@@ -50,7 +60,7 @@ export function mathSuggestions(
         if ("error" in item) continue;
         const key = item.type === "assignment" ? item.variable : item.name;
         counts.set(key, (counts.get(key) ?? 0) + 1);
-        candidates.set(key, { name: key, scope: "global", notePath: item.notePath, tag: item.tag,
+        candidates.set(key, { name: key, scope: "global", notePath: item.notePath, tag: item.tag, unit: declaredUnit(item),
             ...(item.type === "function" ? { parameters: item.parameters } : {}) });
     }
     for (const [key, count] of counts) if (count > 1) candidates.delete(key);
@@ -62,14 +72,15 @@ export function mathSuggestions(
                 const parsed = parseLine(line.text);
                 if (parsed.type === "expression" || parsed.scope === "global") continue;
                 const key = parsed.type === "assignment" ? parsed.variable : parsed.name;
-                candidates.set(key, { name: key, scope: "local", tag: parsed.tag,
+                candidates.set(key, { name: key, scope: "local", tag: parsed.tag, unit: declaredUnit(parsed),
+                    ...(parsed.type === "assignment" && parsed.assumptions ? { description: "Symbol: " + (parsed.assumptions.join(", ") || "unrestricted") } : {}),
                     ...(parsed.type === "function" ? { parameters: parsed.parameters } : {}) });
             } catch { /* Incomplete edits must not disable other suggestions. */ }
         }
     }
     const match = signature.exec(current.text);
     if (match) {
-        for (const parameter of match[2]!.split(",").map(value => value.trim())) {
+        for (const parameter of splitParameters(match[2]!)) {
             if (new RegExp(`^${name}$`, "u").test(parameter)) {
                 candidates.set(parameter, { name: parameter, scope: "parameter" });
             }

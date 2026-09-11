@@ -65,7 +65,8 @@ export function datasetSuggestions(text: string, config: DatasetSettings): MathS
         const expand = (template: string) => template.replace(/\{([^{}]+)\}/g, (_match, key: string) => row[columns.indexOf(key)]!.trim());
         const name = expand(config.datasetName).trim();
         if (!name) throw new Error(`CSV row ${index + 2}: empty name.`);
-        return { name, scope: "dataset", insertText: value,
+        return { name, scope: "dataset", unit: config.datasetUnit.trim() || undefined,
+            insertText: config.datasetUnit.trim() ? `label(${value}, ${JSON.stringify(config.datasetUnit.trim())})` : value,
             description: [value + (config.datasetUnit ? ` ${config.datasetUnit}` : ""), expand(config.datasetDescription), config.datasetPath].filter(Boolean).join(" · ") };
     });
 }

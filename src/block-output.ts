@@ -1,5 +1,12 @@
+import { equationSteps } from "./equation-layout";
 import { renderMath } from "obsidian";
 import type { LineResult } from "./types";
+
+function renderEquation(el: HTMLElement, source: string): void {
+    for (const step of equationSteps(source)) {
+        el.createDiv({ cls: "pymath-equation-step" }).appendChild(renderMath(step, true));
+    }
+}
 
 interface RenderedOutput {
     key: string;
@@ -37,17 +44,14 @@ export class BlockOutput {
             else if (chart && "image" in chart && chart.image) {
                 const url = `data:image/png;base64,${chart.image}`;
                 el.createEl("img", { cls: "pymath-plot", attr: {
-                    src: url, alt: "PyMath function plot",
+                    src: url, alt: "PyMath function plot", "data-pymath-download": downloadName,
                 } });
-                el.createDiv({ cls: "pymath-plot-actions" }).createEl("a", {
-                    cls: "pymath-plot-download",
-                    text: "Save PNG",
-                    attr: { href: url, download: downloadName, "aria-label": "Save plot as PNG" },
-                });
+
             }
         } else {
             el.empty();
             for (const [, result] of lines) {
+                if ("result" in result && !result.result.trim()) continue;
                 const output = el.createDiv({ cls: "pymath-result" });
                 if ("error" in result) {
                     output.setText(`PyMath: ${result.error}`);
@@ -56,10 +60,10 @@ export class BlockOutput {
                         if (result.tag) {
                             const row = output.createDiv({ cls: "pymath-tagged-equation" });
                             const equation = row.createDiv({ cls: "pymath-equation-body" });
-                            equation.appendChild(renderMath(result.result, true));
+                            renderEquation(equation, result.result);
                             row.createDiv({ cls: "pymath-equation-tag" }).setText(`(${result.tag})`);
                         } else {
-                            output.createDiv({ cls: "pymath-equation-body" }).appendChild(renderMath(result.result, true));
+                            renderEquation(output.createDiv({ cls: "pymath-equation-body" }), result.result);
                         }
                     } catch (error) {
                         const message = error instanceof Error ? error.message : String(error);

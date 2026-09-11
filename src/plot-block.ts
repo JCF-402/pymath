@@ -9,11 +9,12 @@ export function isPlotBlock(source: string): boolean {
 
 export function plotBlockLines(source: string, parse: (source: string) => BlockLine[]): BlockLine[] {
     const raw = source.split(/\r?\n/);
-    const plots: { text: string; line: number }[] = [], ranges: { text: string; line: number }[] = [];
+    const plots: { text: string; line: number; mode: "plot" | "parametric" | "polar" }[] = [], ranges: { text: string; line: number }[] = [];
     const options: { text: string; line: number }[] = [];
     const calculations = raw.map((line, index) => {
         const text = stripComment(line).trim();
-        if (/^@plot(?:\s|$)/u.test(text)) { plots.push({ text: text.slice(5).trim(), line: index + 1 }); return ""; }
+        const curve = /^@(plot|parametric|polar)(?:\s|$)/u.exec(text);
+        if (curve) { plots.push({ text: text.slice(curve[0].length).trim(), line: index + 1, mode: curve[1] as "plot" | "parametric" | "polar" }); return ""; }
         if (/^@range(?:\s|$)/u.test(text)) { ranges.push({ text: text.slice(6).trim(), line: index + 1 }); return ""; }
         if (isPlotDirective(text)) { options.push({ text, line: index + 1 }); return ""; }
         return line;
@@ -21,6 +22,8 @@ export function plotBlockLines(source: string, parse: (source: string) => BlockL
     const plot: PlotLine = { type: "plot", expression: "", variable: "x", rangeStart: "", rangeEnd: "", sourceLine: plots[0]?.line ?? ranges[0]?.line ?? 1 };
     try {
         if (!plots.length || plots.length > 10) throw new Error("Use between one and ten @plot expressions per block.");
+        if (new Set(plots.map(item => item.mode)).size !== 1) throw new Error("Use one plot kind per block: @plot, @parametric, or @polar.");
+        if (plots[0]!.mode !== "plot") plot.mode = plots[0]!.mode;
         if (ranges.length !== 1) throw new Error("Use exactly one @range, such as @range x = -10, 10.");
         plot.curves = plots.map(item => {
             const labels = lineLabels(item.text);

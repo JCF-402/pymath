@@ -60,3 +60,18 @@ test('tags and units are separate metadata in either order and before comments',
     assert.throws(() => parseBlock('x = 2 {}'), /equation tag/);
     assert.equal(completionQuery('x = 2 {Vel', 10), null);
 });
+
+test('symbol declarations parse assumptions, labels, Unicode and global scope', () => {
+    assert.deepEqual(parseBlock('@symbol φ1 positive, integer {Count}')[0],
+        {type: 'assignment', variable: 'φ1', expression: '', assumptions: ['positive', 'integer'], tag: 'Count'});
+    assert.deepEqual(parseBlock('@symbol x')[0].assumptions, []);
+    const entries = extractGlobals('Symbols.md', note('@global @symbol x real'));
+    assert.equal(entries[0].scope, 'global');
+    assert.deepEqual(entries[0].assumptions, ['real']);
+    assert.throws(() => parseBlock('@symbol x imaginary_property'), /Unknown assumption/);
+    assert.throws(() => parseBlock('@symbol x real real'), /repeat/);
+    assert.throws(() => parseBlock('@symbol 5'), /Use @symbol/);
+    const suggestions = mathSuggestions(note('@symbol φ1 positive\nφ'), 'N.md', 2, 'φ', []);
+    assert.equal(suggestions[0].name, 'φ1');
+    assert.match(suggestions[0].description, /positive/);
+});

@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { build } from 'esbuild';
 
 const compiled = await build({
-    stdin: { contents: `export * from './src/autocomplete'; export * from './src/editor-suggest';`,
+    stdin: { contents: `export * from './src/autocomplete'; export * from './src/editor-suggest'; export * from './src/latex-suggest';`,
         resolveDir: process.cwd(), loader: 'ts' },
     bundle: true, platform: 'node', format: 'esm', write: false,
     plugins: [{ name: 'obsidian-stub', setup(builder) {
@@ -12,7 +12,7 @@ const compiled = await build({
             'export async function loadMathJax() {} export function renderMath(latex) { return {latex}; } export class EditorSuggest { context = null; close() { this.closed = true; } }', loader: 'js' }));
     } }],
 });
-const { completionQuery, mathSuggestions, PyMathSuggest } =
+const { completionQuery, mathSuggestions, PyMathSuggest, LatexSuggest } =
     // eslint-disable-next-line no-unsanitized/method -- Import locally bundled code and a fixed UI stub.
     await import('data:text/javascript;base64,' + Buffer.from(compiled.outputFiles[0].text).toString('base64'));
 const note = source => '```pymath\n' + source + '\n```';
@@ -166,4 +166,78 @@ test('dataset isotope names render inline LaTeX with mass and atomic numbers', (
     suggest().renderSuggestion({ name: 'He_4_2', scope: 'dataset', insertText: '4.0026032497', description: 'Mass in u' }, el);
     assert.equal(rows[0].math.latex, '{}^{4}_{2}\\mathrm{He}');
     assert.equal(rows[1].text, 'Mass in u');
+});
+
+test('matrix member suggestions insert methods and properties correctly', async () => {
+    for (const [input, name, expected] of [['A.eig', 'eigenvals', 'A.eigenvals()'], ['A.T', 'T', 'A.T']]) {
+        const e = editor(note(input), 1, input.length), s = suggest();
+        s.context = { ...s.onTrigger(e.cursor, e, {path: 'Use.md'}), editor: e, file: {path: 'Use.md'} };
+        const items = await s.getSuggestions(s.context);
+        const item = items.find(item => item.name === name);
+        assert.ok(item);
+        assert.equal(items.some(item => item.name === 'scale'), false);
+        s.selectSuggestion(item);
+        assert.equal(e.getLine(1), expected);
+    }
+});
+
+test('global completion includes declared units without changing insertion names', () => {
+    const indexed = [
+        {...global('speed'), unit:'m/s'},
+        {...global('distance'), expression:'unit(5, "km")'},
+    ];
+    const results = mathSuggestions(note('s'), 'Use.md', 1, '', indexed);
+    assert.equal(results.find(item=>item.name==='speed').unit,'m/s');
+    assert.equal(results.find(item=>item.name==='distance').unit,'km');
+    const s = suggest(), rows=[];
+    s.renderSuggestion(results.find(item=>item.name==='speed'), {createDiv(options){rows.push(options.text);return {setText(){}};}});
+    assert.ok(rows.includes('m/s'));
+});
+
+test('braced subscript completion matches the whole name', () => {
+    const input='p_{n,';
+    assert.equal(completionQuery(input,input.length),input);
+    const results=mathSuggestions(note('p_{n,1} = 3\np_'), 'Use.md',2,'p_',[]);
+    assert.equal(results[0].name,'p_{n,1}');
+});
+
+test('LaTeX names complete as whole variables with nested braces', () => {
+    const input = String.raw`{\Delta m`;
+    assert.equal(completionQuery(input, input.length), input);
+    const text = note(String.raw`{\Delta m} = 3
+{\Del`);
+    assert.equal(mathSuggestions(text, 'Use.md', 2, String.raw`{\Del`, [])[0].name, String.raw`{\Delta m}`);
+    const sub = String.raw`p_{\mathrm{ou`;
+    assert.equal(completionQuery(sub, sub.length), sub);
+});
+
+
+test('completion resumes after a labeled dataset value but stays off inside its quoted unit', () => {
+    for (const input of ['x = label(2.014, "u") + He', 'x = label(2, "u") + label(3, "u") + He']) {
+        assert.equal(completionQuery(input, input.length), 'He');
+    }
+    const inside = 'x = label(2, "He';
+    assert.equal(completionQuery(inside, inside.length), null);
+});
+
+
+test('ordinary math autocomplete inserts a saved formula and excludes definition editing', async () => {
+    let text = '$E_b$', cursor = {line:0,ch:4};
+    const e = {
+        somethingSelected:()=>false, getValue:()=>text, getLine:()=>text,
+        posToOffset:p=>p.ch, offsetToPos:ch=>({line:0,ch}), getCursor:()=>cursor,
+        getRange:(a,b)=>text.slice(a.ch,b.ch),
+        replaceRange:(value,a,b)=>{text=text.slice(0,a.ch)+value+text.slice(b.ch);},
+        setCursor:p=>cursor=p,
+    };
+    const item = {name:'E_b',formula:String.raw`E_b = \Delta m c^2`,notePath:'Energy.md',line:1};
+    const s = new LatexSuggest({}, {ready:Promise.resolve(),getLatexDefinitions:()=>[item]});
+    const trigger = s.onTrigger(cursor,e,{path:'Use.md'});
+    assert.equal(trigger.query,'E_b');
+    const context = {...trigger,editor:e,file:{path:'Use.md'}};
+    assert.deepEqual(await s.getSuggestions(context),[item]);
+    s.context=context; s.selectSuggestion(item);
+    assert.equal(text,'$'+item.formula+'$');
+    text='$@global E_b = x$'; cursor={line:0,ch:12};
+    assert.equal(s.onTrigger(cursor,e,{path:'Use.md'}),null);
 });

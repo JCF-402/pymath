@@ -7,6 +7,7 @@ export function lineLabels(source: string): { expression: string; unit?: string;
     for (let count = 0; count < 2; count++) {
         const match = /\s+(?:\[([\p{L}°µΩ][^[\]\r\n]*)\]|\{([^{}\r\n]*)\})$/u.exec(expression);
         if (!match) break;
+        if (match[2]?.includes("\\")) break; // A LaTeX variable, not a trailing tag.
         const preceding = expression.slice(0, match.index).trimEnd();
         // Do not consume a set literal that is itself the expression.
         if (!preceding || /[=+*/^,(-]$/.test(preceding)) break;

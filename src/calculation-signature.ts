@@ -1,19 +1,21 @@
+import { blockSteps } from "./step-directive";
+import { mathName } from "./math-names";
 import { parseBlockLines } from "./parser";
 import type { GlobalDefinition } from "./types";
 
 export function blockSignature(source: string): string {
-    try { return JSON.stringify(parseBlockLines(source).map(line => {
+    try { return JSON.stringify([blockSteps(source), parseBlockLines(source).map(line => {
         if (line.type !== "plot" || line.error) return line;
         const { sourceLine: _sourceLine, ...calculation } = line;
         return { ...calculation, ...(calculation.curves ? { curves: calculation.curves.map(({ sourceLine: _line, ...curve }) => curve) } : {}) };
-    })); }
+    })]); }
     catch { return JSON.stringify({ invalid: source }); }
 }
 
 // Keep unresolved names too: adding a previously unknown global changes math.
 // Conservative lexical references also cover calculator-style implicit products.
 function names(source: string): string[] {
-    const tokens = source.match(/[\p{L}_][\p{L}\p{M}\p{N}_]*/gu) ?? [];
+    const tokens = source.match(new RegExp(mathName, "gu")) ?? [];
     // SymPy can split an unknown name such as xy into x*y. Track both
     // interpretations so defining x later cannot leave a cached xy unchanged.
     return [...new Set(tokens.flatMap(token => [token, ...token]))];

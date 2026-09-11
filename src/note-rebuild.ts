@@ -1,3 +1,4 @@
+import { blockSteps } from "./step-directive";
 import { isPlotDirective } from "./plot-options";
 import { calculationLines } from "./source-lines";
 import type { Blocks, BlockLine, GlobalDefinition } from "./types";
@@ -25,7 +26,7 @@ export function createNoteRebuild(
     blocks: Record<string, Blocks>,
     showSubstitutionSteps: boolean,
     globals?: GlobalDefinition[],
-    display?: { precision: number; numberFormat: string; decimalPlaces?: number | null },
+    display?: { precision: number; numberFormat: string; decimalPlaces?: number | null; showUnitsInSteps?: boolean },
 ): RebuildRequest[] {
     const requests: RebuildRequest[] = [
         {
@@ -51,7 +52,7 @@ export function createNoteRebuild(
                 blockId: block.id,
                 lineIndex,
                 sourceLine: parsed.type === "plot" ? parsed.sourceLine : sourceLines[lineIndex] ?? lineIndex + 1,
-                showSubstitutionSteps,
+                showSubstitutionSteps: blockSteps(block.source) ?? showSubstitutionSteps,
             });
         }
     }

@@ -9,11 +9,16 @@ PyMath currently requires **desktop Obsidian** and **Python with SymPy**. Matplo
 - [Installation](#installation)
 - [Quick start](#quick-start)
 - [Variables, functions, and evaluation](#variables-functions-and-evaluation)
+- [Symbols, assumptions, and substitution](#symbols-assumptions-and-substitution)
+- [Equations and systems](#equations-and-systems)
+- [Vectors and matrices](#vectors-and-matrices)
+- [Differential equations](#differential-equations)
 - [Calculus and algebra](#calculus-and-algebra)
 - [Global variables and functions](#global-variables-and-functions)
 - [Comments](#comments)
 - [Autocomplete](#autocomplete)
 - [Number formatting](#number-formatting)
+- [Unit calculations](#unit-calculations)
 - [Unit labels](#unit-labels)
 - [Equation tags](#equation-tags)
 - [CSV dataset autocomplete](#csv-dataset-autocomplete)
@@ -64,7 +69,7 @@ The build produces the JavaScript bundle; copy the Python backend separately. If
 2. Open the PyMath settings and set **Python executable** to your Python command or full executable path.
 3. Run **PyMath: Restart Python** from the command palette.
 
-Set the executable explicitly on a fresh installation: this development checkout still contains a machine-specific initial Python path. Settings remain accessible if that path fails to start.
+Fresh installations use `python3`. Set a full executable path if your Python environment is not on Obsidian's PATH. Existing saved paths are preserved; settings remain accessible if Python fails to start.
 
 When updating the plugin, replace the JavaScript bundle, Python backend, and styles together, then reload the plugin.
 
@@ -83,6 +88,8 @@ f(3)
 
 The assignment displays `x = 5`, the expression evaluates to `27`, and the function call displays `f(3) = 9` with default number settings. Switch to Reading view, or move out of the block in Live Preview, to see the rendered output.
 
+Enable **Show units in substitution steps** to include declared local and global unit labels beside substituted numeric values. This display option defaults to off and requires **Show substitution steps**. It does not infer result units or change arithmetic.
+
 To show substituted values in assignments, enable **Show substitution steps**:
 
 ````markdown
@@ -93,7 +100,7 @@ x = V*d
 ```
 ````
 
-When the block renders again, the assignment can show its formula, substituted values, and final result.
+The assignment can show its formula, substituted values, and final result.
 
 ## Variables, functions, and evaluation
 
@@ -112,6 +119,249 @@ Definitions normally belong to the current note. Lines and blocks evaluate in no
 Names are case-sensitive. Trigonometric functions use radians. Unknown symbols may remain symbolic; a result containing an unassigned symbol is not necessarily an error.
 
 PyMath uses expression syntax rather than arbitrary multiline Python scripts or LaTeX input. Function parameters are local to their function. Ordinary definitions are shared within their note; use `@global` to share a definition with other notes.
+
+### LaTeX names and braced subscripts
+
+Use braces when a subscript contains commas or text:
+
+````markdown
+```pymath
+p_{n,1} = 3
+p_{outlet pressure} = p_{n,1} + 2
+p_{outlet pressure}*2
+```
+````
+
+The full braced name identifies one variable, including inside global definitions and function parameters. Subscripts also accept LaTeX, including nested groups such as `p_{\mathrm{out}}` (up to eight nested groups). Braces are required for commas: `p_n,1` is not a single name. Quoted strings are left unchanged.
+
+For a whole LaTeX variable name, enclose it in braces:
+
+```pymath
+@global {\Delta m} = 3
+p_{\mathrm{out}} = 2
+energy = {\Delta m}*p_{\mathrm{out}}
+```
+
+Use the same full name when referencing it. The contents are rendered as LaTeX, not evaluated as a formula. Standalone braced names require a LaTeX command (a backslash); plain `{Description}` remains an equation tag, and ordinary set literals keep their meaning. LaTeX names are included in autocomplete.
+
+Equality chains wrap at the available width: each complete `= expression` moves onto the next line when it does not fit. Individual wide steps remain horizontally scrollable on screen and SVG math is scaled to fit when printing.
+
+## Symbols, assumptions, and substitution
+
+Use `@symbol` to declare one symbolic name per line:
+
+````markdown
+```pymath
+x = 5
+@symbol x positive
+sqrt(x^2)
+formula = x^2 + 2
+subs(formula, x, 3)
+formula
+```
+````
+
+The declaration replaces the earlier numeric value of `x`. Here `sqrt(x^2)` simplifies to `x`, substitution returns `11`, and `formula` still contains `x^2 + 2`.
+
+- `@symbol x` declares a symbol without additional assumptions.
+- `@symbol x real` makes `sqrt(x^2)` simplify to `Abs(x)`.
+- `@symbol n positive integer` combines assumptions; commas are also accepted.
+- Supported assumptions: `real`, `positive`, `negative`, `nonnegative`, `nonpositive`, `nonzero`, `integer`, `rational`, `complex`, `finite`, `even`, and `odd`.
+- Conflicting assumptions produce an error. A later valid declaration restores the name.
+- Declarations remain in the editor but are hidden from rendered output. Autocomplete includes declared local symbols and their assumptions.
+
+Assumptions are mathematical premises, not constraints checked on substitution inputs. Only substitute values compatible with the declared assumptions: simplifying under `positive` and then substituting a negative number does not undo that simplification. See [SymPy's assumptions guide](https://docs.sympy.org/latest/guides/assumptions.html).
+
+Declare symbols **before building formulas**. Redeclaring a symbol does not rewrite formulas already stored earlier in the note. Symbols with different assumptions are distinct mathematical objects. Function parameters remain independent, unrestricted symbols; a declaration on a note variable of the same name does not change the parameter's assumptions.
+
+### Substitute values without assigning them
+
+````markdown
+```pymath
+@symbol x real
+@symbol y real
+formula = x^2 + y
+subs(formula, x, 3)
+subs(formula, [(x, 3), (y, 4)])
+subs(x + 2*y, [(x, y), (y, 1)])
+```
+````
+
+The results are `y + 9`, `13`, and `y + 2`. Multiple replacements happen simultaneously. Neither the formula nor the symbols are changed. Targets must still be symbols; assigning `x = 5` before `subs(formula, x, 3)` causes an explanatory error.
+
+### Share symbolic formulas across notes
+
+````markdown
+```pymath
+@global @symbol x positive
+@global formula = x^2 + 2
+```
+````
+
+Another note can evaluate `subs(formula, x, 3)`. The defining note need not be open. Global symbols follow the same uniqueness and dependency rules as other globals, and are restored when Python restarts.
+
+## Equations and systems
+
+Use `Eq(left, right)` for an equation. Stored equations render without their storage name; `first = Eq(x+y,5)` displays only `x+y = 5`. A single `=` still assigns a value; `==` is not equation syntax. Declare unknowns as symbols before constructing equations.
+
+````markdown
+```pymath
+@symbol x real
+@symbol y real
+first = Eq(x + y, 5)
+second = Eq(x - y, 1)
+solutions = solve([first, second], [x, y], dict=True)
+solutions[0][x]
+subs(x + y, solutions[0])
+```
+````
+
+The solution contains `x = 3` and `y = 2`. The last two lines return 3 and 5. Solving does not assign either unknown. Use `dict=True` for a list of named solution mappings, then index the desired solution or pass it to `subs`. An expression supplied instead of an `Eq` is treated as equal to zero.
+
+| Operation | Example |
+| --- | --- |
+| Solve a single equation | `solve(Eq(x^2, 4), x, dict=True)` |
+| Solve a linear system | `linsolve([x+y-5, x-y-1], (x,y))` |
+| Solve a nonlinear system | `nonlinsolve([x^2+y^2-5, x-y-1], (x,y))` |
+| Restrict the solution domain | `solveset(x^2+1, x, domain=S.Reals)` |
+| Find a numerical root | `nsolve(cos(x)-x, x, 1)` |
+
+`solve` respects assumptions on its unknowns: a positive `x` restricts `x^2 = 4` to the root 2. With `solveset`, specify the desired domain explicitly. Set-based solvers can return parameterized or unresolved sets. An empty result and a solver error are different outcomes; not every equation has a solution that SymPy can find. `Eq` itself may simplify a decidable equality to true or false; `Eq(left, right, evaluate=False)` preserves it as an equation.
+
+### Numerical systems
+
+````markdown
+```pymath
+@symbol x real
+@symbol y real
+nsolve([x + y - 5, x - y - 1], [x, y], [1, 1])
+```
+````
+
+The result is a column vector in the requested variable order. Add `dict=True` to request named solutions instead. Numerical solving finds a root near the initial guess; it does not enumerate every root and can fail to converge. Use `prec=30`, for example, to request higher numerical working precision. Display precision and decimal places only control formatting.
+
+Numeric values inside solution mappings and numerical solution vectors follow the display settings. Stored exact solutions remain exact. Equation and solution lists can also be declared global when their symbolic dependencies are global.
+
+See [SymPy's system-solving guide](https://docs.sympy.org/latest/guides/solving/solve-system-of-equations-algebraically.html) for additional solver behavior. Inequality-specific syntax and UI are not covered by this stage.
+
+## Vectors and matrices
+
+Enter matrices as rows and vectors as a single list. Keep each definition on one line:
+
+````markdown
+```pymath
+A = Matrix([[1, 2], [3, 4]])
+v = Matrix([5, 6])
+A*v
+det(A)
+A.inv()
+A.T
+```
+````
+
+`Matrix([5,6])` is a column vector; `Matrix([[5,6]])` is a row vector. Matrix entries use your numeric display settings while stored exact entries remain exact.
+
+| Operation | Syntax |
+| --- | --- |
+| Add or scale | `A + A`, `2*A` |
+| Matrix multiplication | `A*B` |
+| Matrix power | `A^2` |
+| Transpose | `A.T` |
+| Inverse | `A.inv()` |
+| Determinant | `det(A)` or `A.det()` |
+| Trace / rank | `A.trace()`, `A.rank()` |
+| Solve A*x = v | `A.LUsolve(v)` |
+| Identity / zero / ones | `eye(3)`, `zeros(2,3)`, `ones(2,3)` |
+| Diagonal matrix | `diag(1,2,3)` |
+| Entry (zero-based) | `A[0,1]` |
+
+Vector operations use methods:
+
+````markdown
+```pymath
+u = Matrix([1, 0, 0])
+v = Matrix([0, 1, 0])
+u.dot(v)
+u.cross(v)
+u.norm()
+```
+````
+
+The dot product is 0, the cross product is the column vector `[0,0,1]`, and the norm of `u` is 1. Cross products require three-component vectors. Incompatible dimensions and singular inverses produce errors without stopping independent calculations.
+
+### Eigenvalues and eigenvectors
+
+`A.eigenvals()` returns eigenvalue-to-algebraic-multiplicity mappings. PyMath labels multiplicities explicitly rather than displaying them as equations. Stored mappings can be indexed by eigenvalue. `A.eigenvects()` returns a list of triples: eigenvalue, algebraic multiplicity, and a list of eigenvector basis columns. See [SymPy's matrix guide](https://docs.sympy.org/latest/tutorial/matrices.html).
+
+Matrix constructors appear in autocomplete. After a dot, start typing a method—for example `A.eig`—to see matrix member hints. These are syntax suggestions, not runtime type checking; `.T` is a property and is inserted without parentheses.
+
+Symbols can appear in matrix entries, and `subs(A, x, 3)` returns a substituted matrix. Global matrices work when their symbolic dependencies are also global. This stage covers ordinary matrix expressions; multiline matrix entry and a visual matrix editor are not implemented.
+
+## Differential equations
+
+Declare an unknown function with `Function("name")`, construct the ODE with `Eq` and `diff`, and solve with `dsolve`:
+
+````markdown
+```pymath
+@symbol t
+y = Function("y")
+ode = Eq(diff(y(t), t), y(t))
+dsolve(ode, y(t))
+solution = dsolve(ode, y(t), ics={y(0): 2})
+subs(solution.rhs, t, 1)
+```
+````
+
+The general solution is `y(t) = C1*exp(t)`. The initial condition gives `y(t) = 2*exp(t)`. Solving returns an equation; it does **not** redefine `y`. For this explicit solution, `solution.rhs` retrieves the expression and `solution.lhs` retrieves `y(t)`.
+
+An unknown function differs from a defined formula such as `f(t) = t^2`. Keep the independent variable symbolic when constructing the ODE.
+
+### Second-order equations
+
+Specify derivative conditions by substituting into the derivative:
+
+````markdown
+```pymath
+@symbol t
+y = Function("y")
+ode = Eq(diff(y(t), t, 2) + y(t), 0)
+solution = dsolve(ode, y(t), ics={y(0): 0, diff(y(t), t).subs(t, 0): 1})
+solution.rhs
+```
+````
+
+This gives `sin(t)`. Keep each definition on one line.
+
+### Coupled equations
+
+````markdown
+```pymath
+@symbol t
+u = Function("u")
+v = Function("v")
+solutions = dsolve([Eq(diff(u(t),t),v(t)), Eq(diff(v(t),t),u(t))], [u(t),v(t)], ics={u(0): 1, v(0): 0})
+solutions
+```
+````
+
+The result is a list of equations. Inspect their left-hand sides to identify which function each equation describes, then use the corresponding right-hand side.
+
+### Plot an explicit solution
+
+After the oscillator example, add another block:
+
+````markdown
+```pymath
+@plot solution.rhs {Oscillator}
+@range t = 0, 10
+```
+````
+
+Only use `.rhs` as the solved function when the equation explicitly isolates that function on the left. An implicit solution may require further solving. General solutions containing arbitrary constants need concrete constant values before plotting.
+
+Initial-value solutions can be global when all dependencies are global. General solutions with newly generated integration constants may be rejected by the global undefined-name check; keep those local or supply initial conditions.
+
+Autocomplete includes `Function`, `dsolve`, `classify_ode`, and member hints for `.lhs`, `.rhs`, `.diff(...)`, and `.subs(...)`. Symbolic ODE support depends on SymPy: unsupported equations or inconsistent conditions may fail, and some results remain implicit. Numerical ODE integration and a dedicated initial-condition editor are not implemented. See [SymPy's ODE guide](https://docs.sympy.org/latest/guides/solving/solve-ode.html).
 
 ## Calculus and algebra
 
@@ -137,7 +387,7 @@ This display applies to a direct outer call; a larger expression such as `2 + in
 
 For a definite integral, enclose the integration variable and bounds in a tuple: `(t, lower, upper)`. An indefinite integral returns one antiderivative; SymPy does not append an arbitrary `+ C`. If SymPy cannot evaluate an integral, the result can remain an integral rather than an error. See the [SymPy calculus guide](https://docs.sympy.org/latest/tutorials/intro-tutorial/calculus.html) for the underlying syntax.
 
-Use an **unassigned variable** for calculus. If the note already defines `t = 5`, ordinary substitution replaces `t` before calling SymPy, including in the variable argument. Choose another unassigned name or use a function parameter, which shadows the note value:
+Use an **unassigned variable** for calculus. If the note already defines `t = 5`, ordinary substitution replaces `t` before calling SymPy, including in the variable argument. Declare it again with `@symbol t`, choose another unassigned name, or use a function parameter, which shadows the note value:
 
 ````markdown
 ```pymath
@@ -201,7 +451,7 @@ Comments remain in the editor but are omitted from rendered results and evaluati
 
 Inside a root-level `pymath` block, start typing a variable or function name to see matching suggestions. Suggestions include earlier local definitions from the current editor buffer, global definitions from other notes, and parameters within a function body. Matching is case-sensitive and supports Unicode names such as `φ1` and `π_1`.
 
-Function suggestions show their parameter names; globals show the source note. Selecting a function inserts `name()` and places the cursor inside the parentheses, while existing call arguments are preserved. Local names take precedence over globals. A curated set of built-in SymPy functions and constants is also suggested, with signatures and short descriptions: trigonometry, roots, logarithms, algebra, differentiation, integration, `pi`, `E`, `I`, and `oo`. Function parameters and local/global definitions take precedence over built-ins. Trigonometric angles use radians; matching remains case-sensitive.
+Function suggestions show their parameter names; globals show the source note. Suggestions also display declared unit suffixes such as `[m/s]`, or the quoted units from an explicit outer `unit(...)`, `convert(...)`, or `label(...)` definition. Units are metadata in the suggestion; selecting it inserts the name only. Units for arbitrary derived formulas are not inferred by autocomplete yet. Selecting a function inserts `name()` and places the cursor inside the parentheses, while existing call arguments are preserved. Local names take precedence over globals. A curated set of built-in SymPy functions and constants is also suggested, with signatures and short descriptions: trigonometry, roots, logarithms, algebra, differentiation, integration, `pi`, `E`, `I`, and `oo`. Function parameters and local/global definitions take precedence over built-ins. Trigonometric angles use radians; matching remains case-sensitive.
 
 ## Number formatting
 
@@ -213,6 +463,66 @@ In PyMath settings, **Precision** accepts 2–30 significant digits. **Number fo
 
 Automatic number format uses scientific notation for nonzero magnitudes below `0.0001` or at least `1,000,000`, including when decimal places are set. Other values use decimal notation. Scientific output omits a redundant `× 10^0` factor.
 
+## Unit calculations
+
+Use `unit(value, "units")` for quantities whose units participate in calculation:
+
+````markdown
+```pymath
+distance = unit(100, "m")
+duration = unit(10, "s")
+speed = distance/duration
+convert(speed, "km/h")
+force = unit(2, "kg")*unit(3, "m/s^2")
+convert(force, "N")
+```
+````
+
+Speed converts to 36 km/h and force to 6 N. Addition checks compatible dimensions, so `unit(1,"m") + unit(20,"cm")` is valid while adding metres to seconds is an error. Multiplication, division, and powers carry units through the expression. `convert` checks that the target dimensions match; it does not redefine the original quantity.
+
+Unit strings are case-sensitive. Supported names:
+
+| Category | Names |
+| --- | --- |
+| Length | `m km cm mm um nm` |
+| Time | `s ms min h day` |
+| Mass | `kg g mg` |
+| Other SI base units | `A K mol cd` |
+| Derived units | `Hz N Pa kPa J kJ W C V ohm` |
+| Volume | `L mL` |
+| Angle | `rad deg` |
+| Energy | `eV` |
+
+Combine names with `*`, `/`, parentheses, and powers: `kg*m/s^2`, `m^2`, or `1/s`. Unit names live inside quoted strings and do not reserve note variable names. Default output follows SymPy's unit simplification; use `convert` when you want a particular unit.
+
+### Numeric values and plotting
+
+`magnitude(quantity, "target units")` returns the value in those units without the unit factor:
+
+````markdown
+```pymath
+@global acceleration = unit(2, "m/s^2")
+@global velocity(t) = acceleration*unit(t, "s")
+```
+````
+
+````markdown
+```pymath
+@plot magnitude(velocity(t), "m/s")
+@range t = 0, 5
+@xlabel Time (s)
+@ylabel Speed (m/s)
+```
+````
+
+Display precision applies to scalar coefficients without rounding stored exact quantities. Explicit unit-bearing globals and functions are supported.
+
+### Scope and limitations
+
+The existing suffix `[m/s]` remains a **display-only label**. Use `unit(...)` for dimensional arithmetic; suffix labels do not attach or convert units.
+
+This initial support uses SymPy's SI unit system. Ordinary symbols are not assigned physical dimensions automatically. Elementary function arguments must be dimensionless. Affine temperature conversions (Celsius/Fahrenheit), uncertainty propagation, custom units, and general dimensional inference for equation solving are not implemented. SymPy may simplify zero quantities to plain zero, losing their unit information; this is not a full physical type system. Use explicit quantities and compatible values throughout a formula.
+
 ## Unit labels
 
 Append a label separated by a space, such as `speed = distance/time [m/s]`. Labels appear in upright text after the final result and can precede a trailing comment. They also work on expressions and global/function definitions. These are literal display labels: units are not calculated, converted, or inherited by later expressions. Labels begin with a letter or a unit symbol such as `°`; ordinary indexing such as `values[0]` is preserved.
@@ -221,13 +531,15 @@ Append a label separated by a space, such as `speed = distance/time [m/s]`. Labe
 
 Append `{Outlet velocity}` to an equation, for example `v = 20 [m/s] {Outlet velocity}`. Tags render as right-aligned parenthesized labels beside the equation and appear in autocomplete descriptions for local/global variables and functions. Unit and tag suffixes may appear in either order before a trailing comment. Tags are literal text, not executable LaTeX or alternative variable names; use the original variable/function name in calculations.
 
-Long equations scroll horizontally within their result rather than widening the note. Tags wrap and move below their equation when the result is 480 px wide or narrower. Short equations remain centered. This layout uses the result container's width, so it responds to split panes independently of the overall window size.
+Equation steps wrap as whole `= expression` terms to fit the note or printed page. Individual oversized steps scroll on screen; SVG math scales to fit in print. Tags wrap and move below their equation when the result is 480 px wide or narrower. Short equations remain centered. This layout uses the result container's width, so it responds to split panes independently of the overall window size.
 
 ## CSV dataset autocomplete
 
 One vault CSV can supply numeric autocomplete entries. Configure **Dataset CSV path**, **Dataset name template**, **Dataset value column**, **Dataset description template**, and **Dataset display unit**, then run **PyMath: Reload datasets**. The configured dataset also loads at startup; editing a CSV does not change previously inserted numbers or automatically reload the file.
 
-Defaults match `N,Z,A,El,mass_u` headers: name `{El}_{A}_{Z}`, value column `mass_u`, description `{El}-{A}, Z={Z}, N={N}`, and display unit `u`. Type `He` in a PyMath block to see matching rows. Selecting a row inserts only its numeric text, retaining the digits from the CSV. Labels and units are shown in the suggestion, not inserted into the equation.
+Defaults match `N,Z,A,El,mass_u` headers: name `{El}_{A}_{Z}`, value column `mass_u`, description `{El}-{A}, Z={Z}, N={N}`, and display unit `u`. Type `He` in a PyMath block to see matching rows. Selecting a row preserves its numeric digits and configured unit. With no unit configured, it inserts a bare number.
+
+CSV values with a configured display unit are inserted as `label(3.016, "u")`. This preserves the original numeric digits and unit without performing unit arithmetic. Assignments retain the label for later substitution steps, including globals. Inline labeled values also display their units when **Show units in substitution steps** is enabled. Existing bare numbers must be reselected or labeled manually; their original dataset units cannot be recovered reliably.
 
 Copy `examples/isotopes-sample.csv` into your vault, for example as `Data/isotopes.csv`, to try it. These three example rows were transcribed from the supplied image and are test data, not a verified reference dataset.
 
@@ -263,9 +575,38 @@ For a comparison plot:
 ```
 ````
 
+### Parametric plots
+
+Supply x and y expressions separated by a comma. The range controls the parameter, not the displayed horizontal axis:
+
+````markdown
+```pymath
+@parametric cos(t), sin(t) {Circle}
+@range t = 0, 2*pi
+@aspect equal
+```
+````
+
+Functions containing commas inside their arguments also work. Coordinate limits are automatic, except for an optional `@yrange`. Use `@aspect equal` to keep circles circular.
+
+### Polar plots
+
+Supply radius as a function of the angle in radians:
+
+````markdown
+```pymath
+@polar 1 + cos(t) {Cardioid}
+@range t = 0, 2*pi
+```
+````
+
+Polar plots use a polar grid. Angle input is in radians; tick labels show degrees. Ranges shorter than one revolution display an angular sector; longer ranges use the full polar axes. `@yrange` controls nonnegative radial limits. Negative radii are omitted in this version; they are not reflected through the origin.
+
+Both kinds support up to ten curves of the same kind per block, titles, tags, line styles, sizes, and **Save PNG**. Do not mix `@plot`, `@parametric`, and `@polar` in one block. Parametric and polar plots currently require linear axes. Invalid or complex coordinates are omitted, and a curve needs at least two shared finite samples.
+
 ### Save a plot
 
-Select **Save PNG** below a rendered plot to download the current image. The suggested filename uses the note name and block number, such as `Physics-plot-2.png`. The saved PNG retains the original resolution (140 pixels per inch), transparency, and plot styling; it is not a screenshot of the scaled preview. Use `@size` to adjust its dimensions. The save control is omitted when printing the note.
+Right-click a rendered plot and select **Save PNG** to download the current image. The suggested filename uses the note name and block number, such as `Physics-plot-2.png`. The saved PNG retains the original resolution (140 pixels per inch), transparency, and plot styling; it is not a screenshot of the scaled preview. Use `@size` to adjust its dimensions. No save button is shown beside the chart.
 
 ### Plot customization
 
@@ -294,6 +635,25 @@ Size is width and height in inches at 140 pixels per inch; the image still scale
 
 Per-curve options use the curve's number in `@plot` order, starting at 1. Colors accept Matplotlib color names or quoted hex colors (quotes protect `#` from comment parsing). Styles are `solid`, `dashed`, `dotted`, or `dashdot`. Width is 0.25–8 points (default 2). Each option may appear once per block, or once per curve for color/style/width. Invalid options display a block error.
 
+### Axis controls
+
+````markdown
+```pymath
+@plot x^2
+@range x = 0.1, 100
+@xscale log
+@yscale log
+@yrange 0.01, 10000
+@aspect equal
+```
+````
+
+- `@xscale linear|log` and `@yscale linear|log` select axis scales (default linear). Log axes use base 10; the x-axis uses geometrically spaced samples.
+- `@yrange minimum, maximum` fixes the vertical limits. Use finite numeric literals, including scientific notation, with minimum below maximum. Omit it for automatic limits.
+- Logarithmic x bounds and explicit logarithmic y bounds must be positive. Nonpositive y samples are omitted; a curve with no usable positive samples produces an error.
+- `@aspect auto|equal` controls axis spacing. Equal uses the same visual distance for one unit on each linear axis, or one decade on each logarithmic axis. It adjusts the plot area while preserving the bounds. Default: auto.
+- Each directive may appear once per block. Changes refresh the PNG and its save link.
+
 ## Python paths across devices
 
 **Python executable** is the primary path or command. **Fallback Python executable** is an optional second path, useful when these settings sync between devices. On load and on **Restart Python**, PyMath tries the primary and waits for a backend response; if startup fails, it stops that process and tries the fallback. Identical paths are tried only once. The selected path is not written back over the synced settings. If both fail, settings remain accessible so the paths can be corrected.
@@ -321,11 +681,10 @@ Calculation errors include the original block line number. Independent calculati
 
 - Desktop only; no mobile Python backend.
 - Calculations use fenced blocks; inline calculations are not implemented.
-- Unit suffixes are display labels. Unit arithmetic, conversion, and propagation are not implemented.
+- Unit suffixes remain display labels; use `unit`, `convert`, and `magnitude` for the supported SI quantity operations. Temperature offsets, custom units, and uncertainty propagation are not implemented.
 - Tags describe equations; they are not alternative callable names.
-- CSV autocomplete supports one dataset and inserts numeric literals. JSON import, multiple datasets, and live references to dataset rows are not implemented.
+- CSV autocomplete supports one dataset and inserts numeric values with optional display labels. JSON import, multiple datasets, and live references to dataset rows are not implemented.
 - Plots are static PNGs with up to ten real-valued curves and 801 samples per curve. Interactive zoom and configurable sampling are not implemented.
-- Some sample-plugin UI remains in this development checkout, including **Settings #1** and **Open modal (complex)**; these are not calculation features.
 
 Calculations and vault indexing run locally. The SymPy expression parser is **not a sandbox for untrusted code**: only evaluate PyMath content you trust.
 
@@ -358,7 +717,7 @@ Run lint checks:
 npm run lint
 ```
 
-The current checkout still has lint findings from sample-plugin naming. A successful production build does not imply a clean full-project lint run.
+Run lint separately from the production build to check code quality.
 
 ### Project layout
 
@@ -377,3 +736,36 @@ The current checkout still has lint findings from sample-plugin naming. A succes
 | `examples/isotopes-sample.csv` | Small dataset example |
 
 Do not commit generated bundles or `node_modules/`. For manual Obsidian testing, copy the four installation files into the vault's plugin folder and reload the plugin.
+
+Override the global substitution-step setting for a single block with `@steps on` or `@steps off` on its own line. The directive is hidden in rendered output and applies to the entire block, wherever it appears. Without a directive, the global setting applies. If repeated, the last directive wins.
+
+```pymath
+@steps on
+x = 5
+y = x*2
+```
+
+Use **PyMath: Insert PyMath block** from the command palette or slash-command menu to insert a fenced block with the cursor inside. Enable Obsidian’s **Slash commands** core plugin to use the `/` menu. Selected text is wrapped in the new block.
+
+Use `@xticks pi` or `@yticks pi` to label a linear plot axis in multiples of π. Ticks start at π/2 spacing and thin out for wide ranges. `@xticks auto` / `@yticks auto` restore the default format. For polar plots, `@xticks pi` labels angles in radians.
+
+```pymath
+@plot sin(x)
+@range x = 0, 2*pi
+@xticks pi
+```
+
+## Reusable LaTeX formulas
+
+Register ordinary math as a reusable formula without evaluating it:
+
+```latex
+$$
+@global
+E_b = \Delta m c^2
+$$
+```
+
+Inline `$@global E_b = \Delta m c^2$` is also supported. The left side of `=` is its autocomplete name. Type that name inside another `$...$` or `$$...$$` expression and select a suggestion to insert the entire formula. Suggestions include the source note; duplicate names remain separate choices. Definitions are indexed from closed notes and updated when notes change. Insertions are copies, not live references.
+
+The marker is removed before native math rendering in Reading view and PDF export. Live Preview marker removal is not supported yet; use Reading view for clean output. `@py` evaluation in ordinary math is not implemented in this version. Python globals inside `pymath` fences remain separate.

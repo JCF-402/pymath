@@ -1,3 +1,6 @@
+import { stepDirective } from "./step-directive";
+import { mathName, splitParameters } from "./math-names";
+import { symbolDeclaration } from "./symbol-declaration";
 import { isPlotBlock, plotBlockLines } from "./plot-block";
 import { lineLabels } from "./line-labels";
 import { stripComment } from "./comments";
@@ -7,7 +10,7 @@ import type { ParsedLine, BlockLine } from "./types";
     // Names can contain letters, numbers and underscores,
     // but cannot begin with a number.
     // There are functions f(x) = something, variables x = something and expressions x
-    const namePattern = String.raw`[\p{L}_][\p{L}\p{M}\p{N}_]*`;
+    const namePattern = mathName;
     const validName = new RegExp(`^${namePattern}$`, "u");
 
     const functionDefinition = new RegExp(`^(${namePattern})\\s*\\(([^()]*)\\)\\s*=(?!=)(.*)$`, "u",);
@@ -17,6 +20,7 @@ import type { ParsedLine, BlockLine } from "./types";
 
 export function parseLine(source: string): ParsedLine {
     const cleaned = stripComment(source).trim();
+    if (/^@steps(?:\s|$)/u.test(cleaned)) throw new Error("Use @steps on or @steps off.");
     const { expression: text, ...labels } = lineLabels(cleaned);
     if (/^@global(?:\s|$)/u.test(text)) {
         const definition = parseLocalLine(text.slice(7));
@@ -35,6 +39,9 @@ function parseLocalLine(source: string): ParsedLine {
         throw new Error("Enter a mathematical expression.");
     }
 
+    const declaration = symbolDeclaration(text);
+    if (declaration) return declaration;
+
     const functionMatch = functionDefinition.exec(text); // Exec returns match details like so
     // exec(x = 5)
     // match[0] = x = 5
@@ -48,7 +55,7 @@ function parseLocalLine(source: string): ParsedLine {
         const parameterText = functionMatch[2]!.trim();
         const expression = functionMatch[3]!.trim();
 
-        const parameters = parameterText ? parameterText.split(",").map(parameter => parameter.trim()) : [];
+        const parameters = parameterText ? splitParameters(parameterText) : [];
 
         if (parameters.some(parameter => !validName.test(parameter))) {
             throw new Error("Each function parameter must be a valid name.")
@@ -100,7 +107,7 @@ export function parseBlock(source: string): ParsedLine[] {
     for (const [index, line] of lines.entries()) {
         // Allow blank lines between calculations.
 
-        if (!stripComment(line).trim()) continue;
+        if (!stripComment(line).trim() || stepDirective(line) !== undefined) continue;
 
         try {
             parsedLines.push(parseLine(line));
@@ -126,13 +133,14 @@ function parseCalculationLines(source: string): BlockLine[] {
     const results: BlockLine[] = [];
     for (const [index, raw] of source.split(/\r?\n/).entries()) {
         const expression = stripComment(raw).trim();
-        if (!expression) continue;
+        if (!expression || stepDirective(raw) !== undefined) continue;
         try {
             results.push(parseLine(expression));
         } catch (error) {
             const global = /^@global(?:\s|$)/u.test(expression);
             const definition = expression.replace(/^@global\s*/u, "");
-            const target = new RegExp(`^(${namePattern})\\s*(?:=(?!=)|\\([^=]*\\)\\s*=(?!=))`, "u").exec(definition)?.[1];
+            const symbolTarget = /^@symbol\s+([\p{L}_][\p{L}\p{M}\p{N}_]*)/u.exec(definition)?.[1];
+            const target = symbolTarget ?? new RegExp(`^(${namePattern})\\s*(?:=(?!=)|\\([^=]*\\)\\s*=(?!=))`, "u").exec(definition)?.[1];
             results.push({ type: "invalid", expression,
                 error: `Line ${index + 1}: ${error instanceof Error ? error.message : String(error)}`,
                 ...(target ? { target } : {}), ...(global ? { scope: "global" as const } : {}),

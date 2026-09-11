@@ -1,7 +1,7 @@
 {
-	"name": "obsidian-sample-plugin",
+	"name": "pymath",
 	"version": "1.0.0",
-	"description": "This is a sample plugin for Obsidian (https://obsidian.md)",
+	"description": "Symbolic calculations and plots in Obsidian using local Python and SymPy.",
 	"main": "main.js",
 	"type": "module",
 	"scripts": {

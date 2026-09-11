@@ -9,6 +9,7 @@ globalThis.window = { setTimeout, clearTimeout };
 
 // Exercise the real runtime and Python backend, replacing only Obsidian's UI API.
 const obsidianStub = `
+export class Menu {}
 export class TFile {
     constructor(path) { this.path = path; this.stat = { mtime: 1, size: 0 }; }
     get extension() { return this.path.split('.').at(-1); }
@@ -17,6 +18,7 @@ export class MarkdownRenderChild {
     callbacks = [];
     constructor(el) { this.containerEl = el; }
     register(callback) { this.callbacks.push(callback); }
+    registerDomEvent() {}
     unload() { for (const callback of this.callbacks) callback(); }
 }
 export async function loadMathJax() {}
@@ -64,9 +66,9 @@ class Element {
     }
     empty() { this.setText(''); }
     createEl(tag, options) { const child = new Element(); child.tagName = tag; child.attributes = options.attr; this.children.push(child); return child; }
-    createDiv() { const child = new Element(); this.children.push(child); return child; }
+    createDiv(options) { const child = new Element(); child.className = options?.cls; this.children.push(child); return child; }
     appendChild(child) { this.children.push(child); }
-    output() { return [this.text, ...this.children.map(c => c.latex ?? c.output())].filter(Boolean).join('|'); }
+    output() { return [this.text, ...this.children.map(c => c.latex ?? c.output())].filter(Boolean).join(this.className === 'pymath-equation-body' ? ' ' : '|'); }
 }
 
 function note(sources) {
@@ -107,11 +109,11 @@ function setup(send) {
         file.stat.size = data.text.length;
         files.set(path, file); contents.set(path, data);
     }
-    function view(path, source, start) {
+    function view(path, source, start, docId = "test-document") {
         const el = new Element();
         const children = [];
         const context = {
-            sourcePath: path,
+            sourcePath: path, docId,
             getSectionInfo: () => start === null ? null : { lineStart: start },
             addChild: child => children.push(child),
         };
@@ -458,6 +460,8 @@ test('existing output stays visible during a rebuild and same results retain the
     const h = await pythonHarness(t);
     const data = note(['x = 5', 'x + 2']); h.set('A.md',data);
     const view = h.view('A.md','x + 2',data.starts[1]); await view.ready;
+    // Initial startup may legitimately show progress; only rebuilds must preserve output.
+    view.el.messages.length = 0;
     const node = view.el.childNodes[0], messages = view.el.messages.length;
     const edited = note(['x = 2 + 3', 'x + 2']); h.set('A.md',edited);
     const work = h.runtime.updateNote('A.md',edited.text,edited.metadata);
@@ -510,6 +514,8 @@ test('closed notes supply globals before first render; edits refresh consumers w
     const view = h.view('Consumer.md', 'energy(2)', 0); await view.ready;
     assert.equal(view.el.output(), "\\operatorname{energy}{\\left(2 \\right)} = 18");
     assert.ok(h.sent.every(request => request.notePath === 'Consumer.md'));
+    // Ignore initial startup progress when checking for refresh flicker.
+    view.el.messages.length = 0;
 
     const updated = note(['@global c = 4']); h.set('Constants.md', updated);
     index.update('Constants.md', updated.text);
@@ -869,13 +875,10 @@ test('plot mode replaces the whole block with a PNG and does not overwrite note 
     const source = 'x = 5\nf(x) = sin(x)\n@plot f(x) {Sine curve}\n@range x = -10, 10';
     h.set('Plot.md', note([source]));
     const view = h.view('Plot.md', source, 0); await view.ready;
-    assert.equal(view.el.children.length, 2);
+    assert.equal(view.el.children.length, 1);
     const chart = view.el.children[0];
     assert.equal(chart.tagName, 'img');
-    const download = view.el.children[1].children[0];
-    assert.equal(download.tagName, 'a');
-    assert.equal(download.attributes.href, chart.attributes.src);
-    assert.equal(download.attributes.download, 'Plot-plot-1.png');
+    assert.equal(chart.attributes['data-pymath-download'], 'Plot-plot-1.png');
     const png = Buffer.from(chart.attributes.src.split(',')[1], 'base64');
     assert.equal(png.subarray(1, 4).toString(), 'PNG');
     assert.equal(png.readUInt32BE(16), 1120); assert.equal(png.readUInt32BE(20), 630);
@@ -893,7 +896,7 @@ test('global plot dependencies refresh the chart and plot failures replace it wi
     index.update('Globals.md', note(['@global scale = 4\n@global f(t) = scale*t']).text);
     await h.runtime.refreshGlobals();
     assert.notEqual(view.el.children[0].attributes.src, image);
-    assert.equal(view.el.children[1].children[0].attributes.href, view.el.children[0].attributes.src);
+    assert.ok(view.el.children[0].attributes['data-pymath-download'].endsWith('.png'));
     view.unload();
     const bad = '@plot sqrt(-1)\n@range t = 0, 10'; const data = note([bad]); h.set('Plot.md', data);
     await h.runtime.updateNote('Plot.md', data.text, data.metadata);
@@ -942,7 +945,7 @@ test('multiple curves share one image and changes to the second curve dependency
     const index = await h.indexGlobals(t);
     const source = '@plot sin(x) {Sine}\n@plot amplitude*cos(x) {Cosine}\n@range x = -10, 10';
     h.set('Plot.md', note([source])); const view = h.view('Plot.md', source, 0); await view.ready;
-    assert.equal(view.el.children.length, 2); assert.equal(view.el.children[0].tagName, 'img');
+    assert.equal(view.el.children.length, 1); assert.equal(view.el.children[0].tagName, 'img');
     const first = view.el.children[0].attributes.src;
     const request = h.sent.findLast(request => request.type === 'plot');
     assert.deepEqual(request.curves.map(curve => curve.tag), ['Sine', 'Cosine']);
@@ -977,7 +980,7 @@ test('plot customization reaches the backend, controls dimensions, and edits ref
     await h.runtime.updateNote('Plot.md', data.text, data.metadata);
     view = h.view('Plot.md', source, 0); await view.ready;
     assert.notEqual(view.el.children[0].attributes.src, image);
-    assert.equal(view.el.children[1].children[0].attributes.href, view.el.children[0].attributes.src);
+    assert.ok(view.el.children[0].attributes['data-pymath-download'].endsWith('.png'));
 });
 
 test('invalid plot options display useful errors without stopping Python', async t => {
@@ -1007,7 +1010,7 @@ test('SymPy calculus and algebra operations render through the real note runtime
         ['integrate(t^2, (t, 0, 3))', / = 9$/],
         ['integrate(exp(-t), (t, 0, oo))', / = 1$/],
         ['diff(t^3, t, 2)', /6 t/],
-        ['limit(sin(t)\/t, t, 0)', / = 1$/],
+        ['limit(sin(t)/t, t, 0)', / = 1$/],
         ['summation(k, (k, 1, 10))', / = 55$/],
         ['product(k, (k, 1, 4))', / = 24$/],
         ['series(exp(t), t, 0, 4)', /O/],
@@ -1060,4 +1063,487 @@ test('calculus notation preserves operators, bounds, results and unevaluated exp
     await check('t+1', / = t \+ 1$/, {type: 'function', name: 'integrate', parameters: ['t']});
     const shadowed = await check('integrate(2)', / = 3$/);
     assert.equal(shadowed.includes('\\int'), false);
+});
+
+test('symbols replace numeric assignments and assumptions drive simplification without numeric formatting errors', async t => {
+    const h = await pythonHarness(t);
+    const source = 'x = 5\n@symbol x positive\nsqrt(x^2)\nformula = x^2 + 2\nsubs(formula, x, 3)\nintegrate(x, (x, 0, 2))';
+    h.set('Symbols.md', note([source]));
+    const view = h.view('Symbols.md', source, 0); await view.ready;
+    assert.doesNotMatch(view.el.output(), /PyMath:/);
+    assert.doesNotMatch(view.el.output(), /symbol: positive/);
+    const send = expression => h.send({type: 'expression', expression, notePath: 'Symbols.md', requestId: crypto.randomUUID()});
+    assert.equal((await send('sqrt(x^2)')).result, 'x');
+    assert.equal((await send('subs(formula, x, 3)')).result, '11');
+    assert.equal((await send('x')).result, 'x');
+    assert.match((await send('formula')).result, /x/);
+    assert.equal((await send('subs(x, 5, 3)')).error.includes('targets must be symbols'), true);
+});
+
+test('assumptions rebuild, contradictions invalidate names, and plain declarations recover', async t => {
+    const h = await pythonHarness(t);
+    for (const [declaration, expected] of [
+        ['positive', /^x$/], ['real', /left/], ['positive negative', /Conflicting/],
+        ['unknown', /Unknown assumption/], ['', /x/],
+    ]) {
+        const source = '@symbol x ' + declaration + '\nsqrt(x^2)';
+        const data = note([source]); h.set('Symbols.md', data);
+        await h.runtime.updateNote('Symbols.md', data.text, data.metadata);
+        const response = await h.send({type: 'expression', expression: 'sqrt(x^2)', notePath: 'Symbols.md', requestId: crypto.randomUUID()});
+        assert.match(response.error ?? response.result, expected);
+    }
+});
+
+test('simultaneous substitutions preserve formulas and support global symbols from closed notes', async t => {
+    const h = await pythonHarness(t);
+    h.set('Globals.md', note(['@global @symbol x positive\n@global formula = x^2 + 2']));
+    await h.indexGlobals(t);
+    const source = '@symbol y real\nsubs(formula, x, 3)\nsubs(x + 2*y, [(x, y), (y, 1)])';
+    h.set('Use.md', note([source])); const view = h.view('Use.md', source, 0); await view.ready;
+    assert.doesNotMatch(view.el.output(), /PyMath:/);
+    assert.match(view.el.output(), /11/);
+    const response = await h.send({type: 'expression', expression: 'subs(x+2*y, [(x, y), (y, 1)])', notePath: 'Use.md', requestId: crypto.randomUUID()});
+    assert.equal(response.result, 'y + 2');
+    await h.runtime.restart({send: h.send});
+    const retained = await h.send({type: 'expression', expression: 'sqrt(x^2)', notePath: 'Use.md', requestId: crypto.randomUUID()});
+    assert.equal(retained.result, 'x');
+});
+
+test('plots accept formulas built from symbols with assumptions', async t => {
+    const h = await pythonHarness(t);
+    const source = '@symbol x real\nformula = x^2\n@plot formula\n@range x = -2, 2';
+    h.set('Symbols.md', note([source])); const view = h.view('Symbols.md', source, 0); await view.ready;
+    assert.equal(view.el.children[0].tagName, 'img');
+});
+
+test('equations and systems preserve symbols, render named solutions, and allow reuse', async t => {
+    const h = await pythonHarness(t);
+    const source = '@symbol x real\n@symbol y real\nfirst = Eq(x+y, 5)\nsecond = Eq(x-y, 1)\nsolutions = solve([first, second], [x,y], dict=True)\nsolutions[0][x]\nsubs(x+y, solutions[0])';
+    h.set('Equations.md', note([source]));
+    const view = h.view('Equations.md', source, 0); await view.ready;
+    assert.doesNotMatch(view.el.output(), /PyMath:/);
+    assert.match(view.el.output(), /x = 3/);
+    assert.match(view.el.output(), /y = 2/);
+    const send = expression => h.send({type: 'expression', expression, notePath: 'Equations.md', requestId: crypto.randomUUID()});
+    assert.equal((await send('x')).result, 'x');
+    assert.equal((await send('solutions[0][x]')).result, '3');
+    assert.equal((await send('subs(x+y, solutions[0])')).result, '5');
+    assert.match((await send('solve([Eq(x+y, 1), Eq(x+y, 2)], [x,y], dict=True)')).result, /left\[.*right\]/);
+    assert.match((await send('linsolve([x+y-5], (x,y))')).result, /y/);
+    assert.match((await send('nonlinsolve([x^2+y^2-5, x-y-1], (x,y))')).result, /2/);
+    assert.match((await send('solveset(x^2+1, x, domain=S.Reals)')).result, /emptyset/);
+});
+
+test('solution dictionaries and numerical root vectors respect decimal places', async t => {
+    const h = await pythonHarness(t);
+    const send = expression => h.send({type: 'expression', expression, notePath: 'Roots.md', requestId: crypto.randomUUID(), decimalPlaces: 3});
+    const exact = await send('solve(x^2-2, x, dict=True)');
+    assert.match(exact.result, /x = -1\.414/);
+    assert.match(exact.result, /x = 1\.414/);
+    assert.equal((await send('nsolve(cos(x)-x, x, 1)')).result, '0.739');
+    const vector = await send('nsolve([x+y-5, x-y-1], [x,y], [1,1])');
+    assert.match(vector.result, /3\.000/); assert.match(vector.result, /2\.000/);
+    const failure = await send('nsolve(x^2+1, x, 1)');
+    assert.equal(typeof failure.error, 'string');
+    assert.equal((await send('2+3')).result, '5.000');
+});
+
+test('global equation lists and solution containers resolve and refresh across notes', async t => {
+    const h = await pythonHarness(t);
+    h.set('Definitions.md', note(['@global @symbol x real\n@global @symbol y real\n@global equations = [Eq(x+y, 5), Eq(x-y, 1)]\n@global solutions = solve(equations, [x,y], dict=True)']));
+    const index = await h.indexGlobals(t);
+    const source = 'solutions[0][x]';
+    h.set('Use.md', note([source])); const view = h.view('Use.md', source, 0); await view.ready;
+    assert.equal(view.el.output(), '3');
+    index.update('Definitions.md', note(['@global @symbol x real\n@global @symbol y real\n@global equations = [Eq(x+y, 7), Eq(x-y, 1)]\n@global solutions = solve(equations, [x,y], dict=True)']).text);
+    await h.runtime.refreshGlobals();
+    assert.equal(view.el.output(), '4');
+});
+
+test('positive assumptions restrict symbolic roots and solving does not assign them', async t => {
+    const h = await pythonHarness(t);
+    const source = '@symbol x positive\nsolve(Eq(x^2, 4), x, dict=True)\nx';
+    h.set('Positive.md', note([source])); const view = h.view('Positive.md', source, 0); await view.ready;
+    assert.match(view.el.output(), /x = 2/);
+    assert.doesNotMatch(view.el.output(), /-2/);
+    const value = await h.send({type: 'expression', expression: 'x', notePath: 'Positive.md', requestId: crypto.randomUUID()});
+    assert.equal(value.result, 'x');
+});
+
+test('matrix arithmetic, transpose, inverses and vector operations retain exact values', async t => {
+    const h = await pythonHarness(t);
+    h.showSteps(true);
+    const source = 'A = Matrix([[1,2],[3,4]])\nv = Matrix([5,6])\nw = A*v\nB = A.inv()\nA*B\nA.T';
+    h.set('Matrices.md', note([source])); const view = h.view('Matrices.md', source, 0); await view.ready;
+    assert.doesNotMatch(view.el.output(), /PyMath:/);
+    const send = expression => h.send({type: 'expression', expression, notePath: 'Matrices.md', requestId: crypto.randomUUID()});
+    assert.equal((await send('w[0]')).result, '17');
+    assert.equal((await send('w[1]')).result, '39');
+    assert.equal((await send('(A*B-eye(2)).norm()')).result, '0');
+    assert.equal((await send('(A+A-2*A).norm()')).result, '0');
+    assert.equal((await send('A.T[0,1]')).result, '3');
+    assert.equal((await send('det(A)')).result, '-2');
+    assert.equal((await send('A.rank()')).result, '2');
+    assert.equal((await send('A.trace()')).result, '5');
+    assert.equal((await send('Matrix([1,2,3]).dot(Matrix([4,5,6]))')).result, '32');
+    assert.equal((await send('Matrix([1,0,0]).cross(Matrix([0,1,0]))[2]')).result, '1');
+    assert.equal((await send('(A*A.LUsolve(v)-v).norm()')).result, '0');
+});
+
+test('eigenvalue multiplicities are not displayed as equalities and matrix errors recover', async t => {
+    const h = await pythonHarness(t);
+    const send = expression => h.send({type: 'expression', expression, notePath: 'MatrixErrors.md', requestId: crypto.randomUUID(), decimalPlaces: 3});
+    const eigen = await send('diag(2,2,3).eigenvals()');
+    assert.match(eigen.result, /2\.000.*multiplicity.*2/);
+    assert.match(eigen.result, /3\.000.*multiplicity.*1/);
+    assert.doesNotMatch(eigen.result, / = /);
+    const vectors = await send('diag(2,3).eigenvects()');
+    assert.equal(vectors.error, undefined);
+    assert.match(vectors.result, /matrix/);
+    for (const expression of ['Matrix([[1,2],[2,4]]).inv()', 'Matrix([[1,2],[3]])', 'eye(2)*Matrix([1,2,3])']) {
+        assert.equal(typeof (await send(expression)).error, 'string');
+    }
+    assert.equal((await send('2+3')).result, '5.000');
+});
+
+test('global matrices and symbolic entry substitutions work across notes', async t => {
+    const h = await pythonHarness(t);
+    h.set('Definitions.md', note(['@global @symbol x real\n@global A = Matrix([[x,0],[0,2]])']));
+    await h.indexGlobals(t);
+    h.set('Use.md', note(['subs(A, x, 3).det()']));
+    const view = h.view('Use.md', 'subs(A, x, 3).det()', 0); await view.ready;
+    assert.equal(view.el.output(), '6');
+});
+
+test('first-order ODE solutions and initial conditions work with substitution steps enabled', async t => {
+    const h = await pythonHarness(t);
+    h.showSteps(true);
+    const source = '@symbol t\ny = Function("y")\node = Eq(diff(y(t), t), y(t))\nsolution = dsolve(ode, y(t), ics={y(0): 2})\nsubs(solution.rhs, t, 0)';
+    h.set('ODE.md', note([source])); const view = h.view('ODE.md', source, 0); await view.ready;
+    assert.doesNotMatch(view.el.output(), /PyMath:/);
+    assert.doesNotMatch(view.el.output(), /unknown function/);
+    const send = expression => h.send({type: 'expression', expression, notePath: 'ODE.md', requestId: crypto.randomUUID()});
+    assert.equal((await send('subs(solution.rhs, t, 0)')).result, '2');
+    assert.equal((await send('simplify(diff(solution.rhs,t)-solution.rhs)')).result, '0');
+    assert.match((await send('dsolve(ode, y(t))')).result, /C_\{1\}/);
+    assert.match((await send('y(t)')).result, /y/);
+});
+
+test('second-order ODEs accept derivative initial conditions and malformed ODEs recover', async t => {
+    const h = await pythonHarness(t);
+    const source = '@symbol t\ny = Function("y")\node = Eq(diff(y(t), t, 2) + y(t), 0)\nsolution = dsolve(ode, y(t), ics={y(0): 0, diff(y(t), t).subs(t, 0): 1})';
+    h.set('Oscillator.md', note([source])); const view = h.view('Oscillator.md', source, 0); await view.ready;
+    assert.doesNotMatch(view.el.output(), /PyMath:/);
+    const send = expression => h.send({type: 'expression', expression, notePath: 'Oscillator.md', requestId: crypto.randomUUID()});
+    assert.equal((await send('simplify(solution.rhs-sin(t))')).result, '0');
+    assert.equal((await send('subs(diff(solution.rhs,t), t, 0)')).result, '1');
+    assert.equal(typeof (await send('dsolve(t+1, y(t))')).error, 'string');
+    assert.equal((await send('2+3')).result, '5');
+});
+
+test('coupled ODEs return reusable equation lists', async t => {
+    const h = await pythonHarness(t);
+    const source = '@symbol t\nu = Function("u")\nv = Function("v")\nsolutions = dsolve([Eq(diff(u(t),t),v(t)), Eq(diff(v(t),t),u(t))], [u(t),v(t)], ics={u(0): 1, v(0): 0})';
+    h.set('System.md', note([source])); const view = h.view('System.md', source, 0); await view.ready;
+    assert.doesNotMatch(view.el.output(), /PyMath:/);
+    const send = expression => h.send({type: 'expression', expression, notePath: 'System.md', requestId: crypto.randomUUID()});
+    assert.equal((await send('subs(solutions[0].rhs, t, 0)')).result, '1');
+    assert.equal((await send('subs(solutions[1].rhs, t, 0)')).result, '0');
+    assert.equal((await send('simplify(diff(solutions[0].rhs,t)-solutions[1].rhs)')).result, '0');
+});
+
+test('global initial-value ODE solutions can be plotted from another note', async t => {
+    const h = await pythonHarness(t);
+    h.set('Definitions.md', note(['@global @symbol t\n@global y = Function("y")\n@global ode = Eq(diff(y(t),t), y(t))\n@global solution = dsolve(ode, y(t), ics={y(0): 2})']));
+    await h.indexGlobals(t);
+    const source = '@plot solution.rhs\n@range t = 0, 2';
+    h.set('Plot.md', note([source])); const view = h.view('Plot.md', source, 0); await view.ready;
+    assert.equal(view.el.children[0].tagName, 'img');
+});
+
+test('plot axis controls render, refresh, and preserve the download image', async t => {
+    const h = await pythonHarness(t);
+    let source = '@plot x^2\n@range x = 0.1, 100\n@xscale log\n@yscale log\n@yrange 0.01, 10000\n@aspect equal';
+    h.set('Axes.md', note([source])); let view = h.view('Axes.md', source, 0); await view.ready;
+    assert.equal(view.el.children[0].tagName, 'img');
+    const image = view.el.children[0].attributes.src;
+    const options = h.sent.findLast(r => r.type === 'plot').options;
+    assert.equal(options.xrangeScale, 'log');
+    assert.equal(options.yrangeScale, 'log');
+    assert.deepEqual(options.yrange, [0.01, 10000]);
+    assert.equal(options.aspect, 'equal');
+    view.unload();
+    source = source.replace('@aspect equal', '@aspect auto');
+    const data = note([source]); h.set('Axes.md', data); await h.runtime.updateNote('Axes.md', data.text, data.metadata);
+    view = h.view('Axes.md', source, 0); await view.ready;
+    assert.notEqual(view.el.children[0].attributes.src, image);
+    assert.ok(view.el.children[0].attributes['data-pymath-download'].endsWith('.png'));
+});
+
+test('invalid axis controls report errors and log plots omit nonpositive samples', async t => {
+    const h = await pythonHarness(t);
+    for (const [source, expected] of [
+        ['@plot x\n@range x = -1, 1\n@xscale log', /positive range/],
+        ['@plot -x\n@range x = 1, 10\n@yscale log', /positive, finite/],
+        ['@plot x\n@range x = 1, 10\n@yscale log\n@yrange 0, 10', /positive vertical/],
+        ['@plot x\n@range x = 1, 10\n@yrange 2, 1', /Line 3/],
+        ['@plot x\n@range x = 1, 10\n@aspect square', /Aspect/],
+        ['@plot x\n@range x = 1, 10\n@xscale invalid', /Axis scale/],
+    ]) {
+        const data = note([source]); h.set('Axes.md', data); await h.runtime.updateNote('Axes.md', data.text, data.metadata);
+        const view = h.view('Axes.md', source, 0); await view.ready;
+        assert.match(view.el.output(), expected); view.unload();
+    }
+    const source = '@plot x\n@range x = -1, 1\n@yscale log';
+    const data = note([source]); h.set('Axes.md', data); await h.runtime.updateNote('Axes.md', data.text, data.metadata);
+    const view = h.view('Axes.md', source, 0); await view.ready;
+    assert.equal(view.el.children[0].tagName, 'img');
+});
+
+test('parametric and polar plots render with styles and downloadable PNGs', async t => {
+    const h = await pythonHarness(t);
+    for (const [source, mode] of [
+        ['@parametric cos(t), sin(t) {Circle}\n@parametric 2*cos(t), 2*sin(t) {Outer}\n@range t = 0, 2*pi\n@aspect equal\n@style 2 dashed', 'parametric'],
+        ['@polar 1 + cos(t) {Cardioid}\n@range t = 0, 2*pi\n@yrange 0, 2', 'polar'],
+        ['@parametric 1, t\n@range t = -2, 2', 'parametric'],
+    ]) {
+        const data = note([source]); h.set('Curves.md', data);
+        await h.runtime.updateNote('Curves.md', data.text, data.metadata);
+        const view = h.view('Curves.md', source, 0); await view.ready;
+        assert.equal(view.el.children[0].tagName, 'img', view.el.output());
+        assert.ok(view.el.children[0].attributes['data-pymath-download'].endsWith('.png'));
+        assert.equal(h.sent.findLast(r => r.type === 'plot').mode, mode);
+        view.unload();
+    }
+});
+
+test('parametric second-coordinate globals refresh and invalid plot kinds show errors', async t => {
+    const h = await pythonHarness(t);
+    h.set('Globals.md', note(['@global height = 1']));
+    const index = await h.indexGlobals(t);
+    const source = '@parametric cos(t), height*sin(t)\n@range t = 0, 2*pi\n@aspect equal';
+    h.set('Curves.md', note([source])); const view = h.view('Curves.md', source, 0); await view.ready;
+    const image = view.el.children[0].attributes.src;
+    index.update('Globals.md', note(['@global height = 2']).text); await h.runtime.refreshGlobals();
+    assert.notEqual(view.el.children[0].attributes.src, image); view.unload();
+    for (const [bad, expected] of [
+        ['@parametric cos(t)\n@range t = 0, 1', /x-expression, y-expression/],
+        ['@parametric t, missing\n@range t = 0, 1', /Undefined plot/],
+        ['@plot t\n@polar t\n@range t = 0, 1', /one plot kind/],
+        ['@polar t\n@range t = 0, 1\n@yscale log', /linear axes/],
+        ['@polar 1\n@range t = 0, 1\n@yrange -1, 2', /nonnegative/],
+    ]) {
+        const data = note([bad]); h.set('Curves.md', data); await h.runtime.updateNote('Curves.md', data.text, data.metadata);
+        const output = h.view('Curves.md', bad, 0); await output.ready;
+        assert.match(output.el.output(), expected); output.unload();
+    }
+});
+
+test('unit quantities propagate, convert, and preserve exact arithmetic and old labels', async t => {
+    const h = await pythonHarness(t);
+    h.showSteps(true);
+    const source = 'distance = unit(100, "m")\nduration = unit(10, "s")\nspeed = distance/duration\nconvert(speed, "km/h")\nlegacy = 10 [m/s]';
+    h.set('Units.md', note([source])); const view = h.view('Units.md', source, 0); await view.ready;
+    assert.doesNotMatch(view.el.output(), /PyMath:/);
+    const send = expression => h.send({type: 'expression', expression, notePath: 'Units.md', requestId: crypto.randomUUID()});
+    assert.equal((await send('magnitude(speed, "km/h")')).result, '36');
+    assert.equal((await send('magnitude(unit(1,"m")+unit(20,"cm"),"m")')).result, '1.2');
+    assert.equal((await send('magnitude(unit(2,"kg")*unit(3,"m/s^2"),"N")')).result, '6');
+    assert.equal((await send('magnitude(unit(1,"kPa"),"Pa")')).result, '1000');
+    assert.equal((await send('magnitude(unit(1,"kJ"),"J")')).result, '1000');
+    assert.equal((await send('unit(1,"m")/unit(100,"cm")')).result, '1');
+    assert.equal((await send('legacy*2')).result, '20');
+});
+
+test('incompatible unit operations fail and later independent calculations recover', async t => {
+    const h = await pythonHarness(t);
+    const send = expression => h.send({type: 'expression', expression, notePath: 'Units.md', requestId: crypto.randomUUID()});
+    for (const expression of ['unit(1,"m")+unit(1,"s")', 'convert(unit(1,"m"),"s")', 'sin(unit(1,"m"))', 'unit(1,"Celsius")']) {
+        assert.equal(typeof (await send(expression)).error, 'string', expression);
+    }
+    assert.equal((await send('2+3')).result, '5');
+    const formatted = await h.send({type: 'expression', expression: 'convert(unit(1,"m"),"km")', decimalPlaces: 4, notePath: 'Units.md', requestId: crypto.randomUUID()});
+    assert.match(formatted.result, /0.0010/);
+});
+
+test('global quantities and unit-bearing functions support magnitude plots', async t => {
+    const h = await pythonHarness(t);
+    h.set('Definitions.md', note(['@global acceleration = unit(2,"m/s^2")\n@global velocity(t) = acceleration*unit(t,"s")']));
+    await h.indexGlobals(t);
+    const source = '@plot magnitude(velocity(t), "m/s")\n@range t = 0, 5';
+    h.set('Plot.md', note([source])); const view = h.view('Plot.md', source, 0); await view.ready;
+    assert.equal(view.el.children[0].tagName, 'img', view.el.output());
+});
+
+test('declarations leave no empty rows and equation storage names stay hidden', async t => {
+    const h = await pythonHarness(t);
+    const source = '@symbol x real\n@symbol y real\nfirst = Eq(x+y,5)\nsecond = Eq(x-y,1)\nsolve([first,second],[x,y],dict=True)';
+    h.set('Clean.md', note([source])); const view = h.view('Clean.md',source,0); await view.ready;
+    assert.equal(view.el.children.length,3);
+    assert.doesNotMatch(view.el.output(), /symbol:|first|second/);
+    assert.match(view.el.output(), /x \+ y = 5/);
+    assert.match(view.el.output(), /x = 3/);
+});
+
+test('braced subscript variables evaluate, display and resolve global references', async t => {
+    const h = await pythonHarness(t);
+    h.set('Defs.md', note(['@global p_{n,1} = 4']));
+    await h.indexGlobals(t);
+    const source = 'p_{long text} = p_{n,1} + 2\np_{long text}*2\nf(x_{a,b}) = x_{a,b}^2\nf(3)';
+    h.set('Subscripts.md', note([source])); const view = h.view('Subscripts.md',source,0); await view.ready;
+    assert.doesNotMatch(view.el.output(), /PyMath:|pymathsub/);
+    assert.match(view.el.output(), /12/);
+    assert.match(view.el.output(), /9/);
+});
+
+
+test('powered display unit labels render superscripts and do not affect evaluation', async t => {
+    const h = await pythonHarness(t);
+    const source = 'mass = 938.27 [MeV/c^2]\nmass*2\n3 [m s^{-2}]';
+    h.set('A.md', note([source]));
+    const view = h.view('A.md', source, 0); await view.ready;
+    assert.match(view.el.output(), /\\text\{MeV\/c\}\^\{2\}/);
+    assert.match(view.el.output(), /1876[.]54/);
+    assert.match(view.el.output(), /\\text\{m s\}\^\{-2\}/);
+    assert.doesNotMatch(view.el.output(), /PyMath:|textasciicircum/);
+});
+
+
+test('numeric assignments omit redundant steps while dependent formulas retain them', async t => {
+    const h = await pythonHarness(t); h.showSteps(true);
+    const source = 'mass = 9.109*10^-31 [kg]\nc = 299800000.0\np = 1.0072764666\nx = 3\ny = x*2';
+    h.set('A.md', note([source]));
+    const view = h.view('A.md', source, 0); await view.ready;
+    const lines = view.el.output().split('|');
+    for (const line of lines.slice(0, 4)) assert.equal(line.split(' = ').length, 2, line);
+    assert.match(lines[0], /\\text\{kg\}/);
+    assert.match(lines[4], /y = .*x.* = .*3.* = 6/);
+});
+
+test('optional step units use local and closed-note global labels and clear on reassignment', async t => {
+    const h = await pythonHarness(t); h.showSteps(true);
+    h.display({ precision: 12, numberFormat: 'automatic', showUnitsInSteps: true });
+    h.set('Globals.md', note(['@global distance = 10 [m]'])); await h.indexGlobals(t);
+    const source = 'time = 2 [s]\nspeed = distance/time\ndistance = 4\nother = distance/time';
+    h.set('A.md', note([source]));
+    const view = h.view('A.md', source, 0); await view.ready;
+    let lines = view.el.output().split('|');
+    assert.match(lines[1], /\\text\{m\}/);
+    assert.match(lines[1], /\\text\{s\}/);
+    assert.match(lines[1], / = 5$/);
+    assert.doesNotMatch(lines[3], /\\text\{m\}/);
+    assert.match(lines[3], /\\text\{s\}/);
+    h.display({ precision: 12, numberFormat: 'automatic', showUnitsInSteps: false });
+    await h.runtime.refreshGlobals();
+    lines = view.el.output().split('|');
+    assert.doesNotMatch(lines[1], /\\text/);
+    assert.match(lines[1], / = 5$/);
+});
+
+
+test('dataset display labels survive assignments, globals and inline substitution without changing arithmetic', async t => {
+    const h = await pythonHarness(t); h.showSteps(true);
+    h.display({ precision: 12, numberFormat: 'automatic', showUnitsInSteps: true });
+    h.set('Globals.md', note(['@global mass = label(4.0026, "u")'])); await h.indexGlobals(t);
+    const source = 'localmass = label(3.016, "u")\nx = mass + localmass\ny = 2*label(3.016, "u")';
+    h.set('A.md', note([source]));
+    const view = h.view('A.md', source, 0); await view.ready;
+    const lines = view.el.output().split('|');
+    assert.match(lines[0], /\\text\{u\}/);
+    assert.equal(lines[0].split(' = ').length, 2);
+    assert.match(lines[1], /\\text\{u\}.*\\text\{u\}.* = 7.0186$/);
+    assert.match(lines[2], /\\text\{u\}.* = 6.032$/);
+    assert.doesNotMatch(view.el.output(), /PyMath:|Dummy|label/);
+});
+
+
+test('export contexts without section positions render duplicate blocks in note order', async t => {
+    const h = await pythonHarness(t);
+    h.set('A.md', note(['x = 2', 'x', 'x = 7', 'x']));
+    const first = h.view('A.md', 'x', null, 'pdf');
+    const second = h.view('A.md', 'x', null, 'pdf');
+    const separateExport = h.view('A.md', 'x', null, 'another-pdf');
+    await Promise.all([first.ready, second.ready, separateExport.ready]);
+    assert.equal(first.el.output(), '2');
+    assert.equal(second.el.output(), '7');
+    assert.equal(separateExport.el.output(), '2');
+    const missing = h.view('A.md', 'z+1', null, 'pdf'); await missing.ready;
+    assert.match(missing.el.output(), /Could not locate/);
+});
+
+test('export contexts await plot images without section positions', async t => {
+    const h = await pythonHarness(t);
+    const source = '@plot x^2\n@range x = 0, 2';
+    h.set('A.md', note([source]));
+    const view = h.view('A.md', source, null, 'pdf'); await view.ready;
+    assert.equal(view.el.children[0].tagName, 'img');
+    assert.match(view.el.children[0].attributes.src, /^data:image\/png;base64,/);
+});
+
+test('block steps directives override both global settings and edits invalidate cached display', async t => {
+    const h = await pythonHarness(t);
+    const on = '@steps on # show work\nx = 3\ny = x*2';
+    const off = '@steps off\nz = x*3';
+    h.set('A.md', note([on, off]));
+    const a = h.view('A.md', on, 0);
+    const b = h.view('A.md', off, note([on, off]).starts[1]);
+    await Promise.all([a.ready, b.ready]);
+    assert.match(a.el.output(), /y = .*x.* = .*3.* = 6/);
+    assert.equal(b.el.output(), 'z = 9');
+    h.showSteps(true); await h.runtime.refreshGlobals();
+    assert.equal(b.el.output(), 'z = 9');
+    const changed = on.replace('@steps on', '@steps off');
+    const data = note([changed, off]); h.set('A.md', data);
+    await h.runtime.updateNote('A.md', data.text, data.metadata);
+    const c = h.view('A.md', changed, 0); await c.ready;
+    assert.equal(c.el.output(), 'x = 3|y = 6');
+    const invalid = '@steps maybe\nq = (';
+    h.set('B.md', note([invalid]));
+    const d = h.view('B.md', invalid, 0); await d.ready;
+    assert.match(d.el.output(), /Line 1: Use @steps on or @steps off/);
+    assert.match(d.el.output(), /Line 2:/);
+});
+
+
+test('LaTeX variable names and nested subscript names evaluate and render without encoded identifiers', async t => {
+    const h = await pythonHarness(t); h.showSteps(true);
+    h.set('Globals.md', note([String.raw`@global {\Delta m} = 3`])); await h.indexGlobals(t);
+    const source = String.raw`p_{\mathrm{out}} = 2
+energy = {\Delta m}*p_{\mathrm{out}}
+{\Delta m}
+`;
+    h.set('A.md', note([source]));
+    const view = h.view('A.md', source, 0); await view.ready;
+    assert.match(view.el.output(), /\\Delta m/);
+    assert.match(view.el.output(), /p_\{\\mathrm\{out\}\}/);
+    assert.match(view.el.output(), / = 6/);
+    assert.doesNotMatch(view.el.output(), /PyMath:|pymathsub/);
+});
+
+
+test('inline labels appear in the first step without a units-only intermediate step', async t => {
+    const h = await pythonHarness(t); h.showSteps(true);
+    h.display({ precision: 12, numberFormat: 'automatic', decimalPlaces: 3, showUnitsInSteps: true });
+    const source = 'Δm_react = 2label(2.0141017780, "u")';
+    h.set('A.md', note([source]));
+    const view = h.view('A.md', source, 0); await view.ready;
+    const steps = view.el.output().split(' = ');
+    assert.equal(steps.length, 3, view.el.output());
+    assert.match(steps[1], /2.*2[.]014.*\\text\{u\}/);
+    assert.equal(steps[2], '4.028');
+});
+
+test('pi tick directives render and reject unsupported formats and log axes', async t => {
+    const h = await pythonHarness(t);
+    const source = '@plot sin(x)\n@range x = 0, 2*pi\n@xticks pi';
+    h.set('A.md', note([source]));
+    const view = h.view('A.md', source, 0); await view.ready;
+    assert.equal(view.el.children[0].tagName, 'img');
+    for (const [suffix, error] of [['@xticks degrees', /Tick format/], ['@xticks pi\n@xscale log', /linear axis/]]) {
+        const invalid = '@plot x\n@range x = 1, 10\n'+suffix;
+        h.set('B.md', note([invalid]));
+        const data = note([invalid]); await h.runtime.updateNote('B.md', data.text, data.metadata);
+        const bad = h.view('B.md', invalid, 0); await bad.ready;
+        assert.match(bad.el.output(), error);
+    }
 });

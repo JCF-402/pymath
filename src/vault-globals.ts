@@ -1,3 +1,4 @@
+import { extractLatexDefinitions, type LatexDefinition } from "./latex-definitions";
 import { pymathLines } from "./pymath-lines";
 import type { App } from "obsidian";
 import { parseLine } from "./parser";
@@ -17,7 +18,7 @@ export function extractGlobals(notePath: string, text: string): GlobalDefinition
         } catch (error) {
             definitions.push({
                 notePath, line: index + 1,
-                name: /^\s*@global\s+([\p{L}_][\p{L}\p{M}\p{N}_]*)/u.exec(line)?.[1],
+                name: /^\s*@global\s+(?:@symbol\s+)?([\p{L}_][\p{L}\p{M}\p{N}_]*)/u.exec(line)?.[1],
                 error: error instanceof Error ? error.message : String(error),
             });
         }
@@ -26,6 +27,9 @@ export function extractGlobals(notePath: string, text: string): GlobalDefinition
 }
 
 export class VaultGlobals {
+    private latexByNote = new Map<string, LatexDefinition[]>();
+    getLatexDefinitions(): LatexDefinition[] { return [...this.latexByNote.values()].flat(); }
+
     private byNote = new Map<string, GlobalDefinition[]>();
     private revisions = new Map<string, number>();
     private definitions: GlobalDefinition[] = [];
@@ -46,6 +50,7 @@ export class VaultGlobals {
         if (this.closed) return;
         this.touch(notePath);
         this.byNote.set(notePath, extractGlobals(notePath, text));
+        this.latexByNote.set(notePath, extractLatexDefinitions(notePath, text));
         this.publish();
     }
 
@@ -54,6 +59,7 @@ export class VaultGlobals {
             if (notePath === path || notePath.startsWith(`${path}/`)) {
                 this.touch(notePath);
                 this.byNote.delete(notePath);
+                this.latexByNote.delete(notePath);
             }
         }
         this.publish();
@@ -64,6 +70,9 @@ export class VaultGlobals {
             if (notePath !== oldPath && !notePath.startsWith(`${oldPath}/`)) continue;
             const destination = newPath + notePath.slice(oldPath.length);
             const entries = this.byNote.get(notePath);
+            const latex = this.latexByNote.get(notePath);
+            this.latexByNote.delete(notePath);
+            if (latex && destination.toLowerCase().endsWith(".md")) this.latexByNote.set(destination, latex.map(item => ({ ...item, notePath: destination })));
             this.touch(notePath);
             this.touch(destination);
             this.byNote.delete(notePath);
@@ -80,6 +89,7 @@ export class VaultGlobals {
         this.closed = true;
         if (this.timer !== undefined) window.clearTimeout(this.timer);
         this.byNote.clear();
+        this.latexByNote.clear();
     }
 
     private touch(path: string): void {
@@ -105,13 +115,17 @@ export class VaultGlobals {
                 const { file, path, revision } = entry;
                 if (this.revisions.get(path) !== revision || file.path !== path) continue;
                 let definitions: GlobalDefinition[];
+                let latex: LatexDefinition[] = [];
                 try {
-                    definitions = extractGlobals(path, await this.app.vault.read(file));
+                    const text = await this.app.vault.read(file);
+                    definitions = extractGlobals(path, text);
+                    latex = extractLatexDefinitions(path, text);
                 } catch (error) {
                     definitions = [{ notePath: path, line: 1, error: `Could not read global definitions: ${String(error)}` }];
                 }
                 if (this.closed || this.revisions.get(path) !== revision || file.path !== path) continue;
                 this.byNote.set(path, definitions);
+                this.latexByNote.set(path, latex);
             }
         }));
         if (!this.closed) this.publish();
